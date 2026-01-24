@@ -26,3 +26,16 @@ class UserBaseline(Base):
     avg_effort = Column(Float)
     avg_confidence = Column(Float)
     samples = Column(Integer)
+
+from sqlalchemy import Column, Integer, String, DateTime
+from datetime import datetime
+
+class ActionLog(Base):
+    __tablename__ = "action_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True)
+    band = Column(String)
+    policy = Column(String)
+    message = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)

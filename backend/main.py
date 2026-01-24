@@ -1,14 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-import csv
-import io
 
 from database import SessionLocal, engine
-from models import Proof, UserBaseline, Base
+from models import Proof, UserBaseline, ActionLog, Base
 
 TRUST_POLICY_MAP = {
     "verified": "full_access",
@@ -88,20 +85,12 @@ def fraud_checks(db, proof: ProofIn) -> list[str]:
 # --------------------------------
 def compute_base_confidence(effort_score: float, flags: list[str]) -> float:
     c = effort_score
-
     if "chain_break" in flags:
         c *= 0.4
     if "replay_detected" in flags:
         c *= 0.2
     if "large_time_gap" in flags:
         c *= 0.7
-    if "machine_like_rhythm" in flags:
-        c *= 0.6
-    if "edit_spam" in flags:
-        c *= 0.8
-    if "near_idle" in flags:
-        c *= 0.5
-
     return round(min(c, 1.0), 3)
 
 # --------------------------------
@@ -216,7 +205,7 @@ def submit_proof(proof: ProofIn):
     }
 
 # --------------------------------
-# Proofs (for dashboard charts)
+# Proofs (for charts)
 # --------------------------------
 @app.get("/proofs")
 def get_proofs():
@@ -226,7 +215,7 @@ def get_proofs():
     return proofs
 
 # --------------------------------
-# Decision (FIXED)
+# Decision + Action Log (NEW)
 # --------------------------------
 @app.get("/decision/{user_id}")
 def decision(user_id: str):
@@ -241,21 +230,63 @@ def decision(user_id: str):
     )
 
     if not proofs:
-        db.close()
-        return {
-            "session_confidence": 0.0,
-            "windows": 0,
-            "decision": trust_band(0.0)
-        }
+        decision_data = trust_band(0.0)
+    else:
+        avg_conf = sum(p.confidence for p in proofs) / len(proofs)
+        decision_data = trust_band(avg_conf)
 
-    avg_conf = sum(p.confidence for p in proofs) / len(proofs)
+    # ---- Action log (only if band changed) ----
+    last = (
+        db.query(ActionLog)
+        .filter(ActionLog.user_id == user_id)
+        .order_by(ActionLog.id.desc())
+        .first()
+    )
+
+    if not last or last.band != decision_data["band"]:
+        log = ActionLog(
+            user_id=user_id,
+            band=decision_data["band"],
+            policy=decision_data["policy"],
+            message=f"{decision_data['label']} — {decision_data['policy']}"
+        )
+        db.add(log)
+        db.commit()
+
     db.close()
 
     return {
-        "session_confidence": round(avg_conf, 3),
+        "session_confidence": round(
+            sum(p.confidence for p in proofs) / len(proofs), 3
+        ) if proofs else 0.0,
         "windows": len(proofs),
-        "decision": trust_band(avg_conf)
+        "decision": decision_data
     }
+
+# --------------------------------
+# Action Log (READ)
+# --------------------------------
+@app.get("/actions/{user_id}")
+def actions(user_id: str):
+    db = SessionLocal()
+    logs = (
+        db.query(ActionLog)
+        .filter(ActionLog.user_id == user_id)
+        .order_by(ActionLog.id.desc())
+        .limit(20)
+        .all()
+    )
+    db.close()
+
+    return [
+        {
+            "band": l.band,
+            "policy": l.policy,
+            "message": l.message,
+            "timestamp": l.timestamp.isoformat() + "Z"
+        }
+        for l in logs
+    ]
 
 # --------------------------------
 # Health
