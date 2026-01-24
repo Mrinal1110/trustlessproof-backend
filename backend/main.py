@@ -11,6 +11,16 @@ import io
 from database import SessionLocal, engine
 from models import Proof, UserBaseline, Base
 
+# =================================
+# TRUST POLICY (PHASE 8.1)
+# =================================
+TRUST_POLICY_MAP = {
+    "verified": "full_access",
+    "probable": "monitor",
+    "uncertain": "review_required",
+    "low_trust": "restricted"
+}
+
 # --------------------------------
 # DB init
 # --------------------------------
@@ -137,46 +147,49 @@ def apply_adaptive(db, user_id: str, base_conf: float, effort: float) -> float:
     return min(adaptive_conf, 1.0)
 
 # --------------------------------
-# Trust band
+# Trust band + policy
 # --------------------------------
 def trust_band(conf: float) -> dict:
     if conf >= 0.65:
-        return {
+        band = {
             "band": "verified",
             "label": "🟢 Verified",
             "action": "accept",
             "explanation": "Strong continuous evidence of real human work."
         }
     elif conf >= 0.45:
-        return {
+        band = {
             "band": "probable",
             "label": "🟡 Probable",
             "action": "accept",
             "explanation": "Work is likely genuine with minor irregularities."
         }
     elif conf >= 0.25:
-        return {
+        band = {
             "band": "uncertain",
             "label": "🟠 Uncertain",
             "action": "review",
             "explanation": "Mixed signals; optional manager review recommended."
         }
     else:
-        return {
+        band = {
             "band": "low_trust",
             "label": "🔴 Low Trust",
             "action": "clarify",
             "explanation": "Insufficient evidence in this session."
         }
 
+    # Phase 8.1 — declarative policy binding
+    band["policy"] = TRUST_POLICY_MAP.get(band["band"], "monitor")
+    return band
+
 # --------------------------------
-# Submit proof (HARDENED)
+# Submit proof
 # --------------------------------
 @app.post("/submit_proof")
 def submit_proof(proof: ProofIn):
     db = SessionLocal()
 
-    # Idempotency
     existing = (
         db.query(Proof)
         .filter(Proof.effort_hash == proof.effort_hash)
@@ -187,10 +200,7 @@ def submit_proof(proof: ProofIn):
         return {
             "status": "duplicate_ignored",
             "confidence": existing.confidence,
-            "fraud_flags": (
-                existing.flags.split(",")
-                if existing.flags else []
-            )
+            "fraud_flags": existing.flags.split(",") if existing.flags else []
         }
 
     backend_flags = fraud_checks(db, proof)
@@ -239,7 +249,7 @@ def get_proofs():
     return proofs
 
 # --------------------------------
-# Decision
+# Decision (NOW WITH POLICY)
 # --------------------------------
 @app.get("/decision/{user_id}")
 def decision(user_id: str):
@@ -271,147 +281,15 @@ def decision(user_id: str):
     }
 
 # --------------------------------
-# EXPORT — Session summary (JSON)
+# POLICY — READ ONLY (PHASE 8.1)
 # --------------------------------
-@app.get("/export/session/{user_id}")
-def export_session(user_id: str, limit: int = 50):
-    db = SessionLocal()
-
-    proofs = (
-        db.query(Proof)
-        .filter(Proof.user_id == user_id)
-        .order_by(Proof.id.desc())
-        .limit(limit)
-        .all()
-    )
-
-    if not proofs:
-        db.close()
-        return {"status": "empty"}
-
-    avg_conf = sum(p.confidence for p in proofs) / len(proofs)
-
-    flags = {}
-    for p in proofs:
-        for f in p.flags.split(",") if p.flags else []:
-            flags[f] = flags.get(f, 0) + 1
-
-    db.close()
-
+@app.get("/policy")
+def policy():
     return {
-        "user_id": user_id,
-        "windows": len(proofs),
-        "session_confidence": round(avg_conf, 3),
-        "trust_band": trust_band(avg_conf),
-        "flag_summary": flags,
-        "time_range": {
-            "from": proofs[-1].timestamp,
-            "to": proofs[0].timestamp
-        }
+        "version": "pilot-default-v1",
+        "description": "Declarative trust policy mapping (no enforcement)",
+        "policy_map": TRUST_POLICY_MAP
     }
-
-# --------------------------------
-# EXPORT — CSV (DOWNLOAD)
-# --------------------------------
-@app.get("/export/proofs.csv")
-def export_csv(user_id: str):
-    db = SessionLocal()
-
-    proofs = (
-        db.query(Proof)
-        .filter(Proof.user_id == user_id)
-        .order_by(Proof.id.asc())
-        .all()
-    )
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    writer.writerow([
-        "id",
-        "timestamp",
-        "effort_hash",
-        "prev_hash",
-        "effort_score",
-        "confidence",
-        "flags"
-    ])
-
-    for p in proofs:
-        writer.writerow([
-            p.id,
-            p.timestamp,
-            p.effort_hash,
-            p.prev_hash,
-            p.effort_score,
-            p.confidence,
-            p.flags
-        ])
-
-    db.close()
-
-    return Response(
-        content=output.getvalue(),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=trustlessproof_{user_id}.csv"
-        }
-    )
-
-# --------------------------------
-# EXPORT — Human report (TEXT)
-# --------------------------------
-@app.get("/export/report/{user_id}")
-def export_report(user_id: str):
-    db = SessionLocal()
-
-    proofs = (
-        db.query(Proof)
-        .filter(Proof.user_id == user_id)
-        .order_by(Proof.id.desc())
-        .limit(50)
-        .all()
-    )
-
-    if not proofs:
-        db.close()
-        return "No verified work sessions found."
-
-    avg_conf = sum(p.confidence for p in proofs) / len(proofs)
-    band = trust_band(avg_conf)
-
-    lines = []
-    lines.append("TrustlessProof — Work Verification Report")
-    lines.append(f"Generated at: {datetime.utcnow().isoformat()}Z")
-    lines.append("Verifier: TrustlessProof v1 (local-first)")
-    lines.append("=" * 46)
-    lines.append(f"User: {user_id}")
-    lines.append(f"Windows analyzed: {len(proofs)}")
-    lines.append(f"Session confidence: {round(avg_conf, 3)}")
-    lines.append(f"Trust classification: {band['label']}")
-    lines.append("")
-    lines.append("Observed signals:")
-
-    flag_counts = {}
-    for p in proofs:
-        for f in p.flags.split(",") if p.flags else []:
-            flag_counts[f] = flag_counts.get(f, 0) + 1
-
-    if not flag_counts:
-        lines.append("- No anomalous patterns detected")
-    else:
-        for f, c in flag_counts.items():
-            lines.append(f"- {f}: {c} occurrence(s)")
-
-    lines.append("")
-    lines.append(
-        "Note: This report verifies the occurrence of human effort using "
-        "cryptographic continuity and behavioral signals. "
-        "No content, keystrokes, or screen data were collected."
-    )
-
-    db.close()
-    return "\n".join(lines)
 
 # --------------------------------
 # Health
@@ -419,4 +297,3 @@ def export_report(user_id: str):
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
