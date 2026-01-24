@@ -216,6 +216,16 @@ def submit_proof(proof: ProofIn):
     }
 
 # --------------------------------
+# Proofs (for dashboard charts)
+# --------------------------------
+@app.get("/proofs")
+def get_proofs():
+    db = SessionLocal()
+    proofs = db.query(Proof).order_by(Proof.id.asc()).all()
+    db.close()
+    return proofs
+
+# --------------------------------
 # Decision (FIXED)
 # --------------------------------
 @app.get("/decision/{user_id}")
