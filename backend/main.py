@@ -164,6 +164,17 @@ def trust_band(conf: float) -> dict:
     }
 
 # --------------------------------
+# Policy (Declarative)
+# --------------------------------
+@app.get("/policy")
+def policy():
+    return {
+        "version": "pilot-default-v1",
+        "description": "Declarative trust policy mapping (no enforcement)",
+        "policy_map": TRUST_POLICY_MAP
+    }
+
+# --------------------------------
 # Submit proof
 # --------------------------------
 @app.post("/submit_proof")
