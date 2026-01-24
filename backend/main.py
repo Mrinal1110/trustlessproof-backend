@@ -4,16 +4,12 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-
 import csv
 import io
 
 from database import SessionLocal, engine
 from models import Proof, UserBaseline, Base
 
-# =================================
-# TRUST POLICY (PHASE 8.1)
-# =================================
 TRUST_POLICY_MAP = {
     "verified": "full_access",
     "probable": "monitor",
@@ -135,12 +131,8 @@ def apply_adaptive(db, user_id: str, base_conf: float, effort: float) -> float:
     adaptive_conf = round(base_conf * norm, 3)
 
     alpha = 0.1
-    baseline.avg_effort = (
-        (1 - alpha) * baseline.avg_effort + alpha * effort
-    )
-    baseline.avg_confidence = (
-        (1 - alpha) * baseline.avg_confidence + alpha * adaptive_conf
-    )
+    baseline.avg_effort = (1 - alpha) * baseline.avg_effort + alpha * effort
+    baseline.avg_confidence = (1 - alpha) * baseline.avg_confidence + alpha * adaptive_conf
     baseline.samples += 1
 
     db.commit()
@@ -151,37 +143,25 @@ def apply_adaptive(db, user_id: str, base_conf: float, effort: float) -> float:
 # --------------------------------
 def trust_band(conf: float) -> dict:
     if conf >= 0.65:
-        band = {
-            "band": "verified",
-            "label": "🟢 Verified",
-            "action": "accept",
-            "explanation": "Strong continuous evidence of real human work."
-        }
+        band = "verified"
+        explanation = "Strong continuous evidence of real human work."
     elif conf >= 0.45:
-        band = {
-            "band": "probable",
-            "label": "🟡 Probable",
-            "action": "accept",
-            "explanation": "Work is likely genuine with minor irregularities."
-        }
+        band = "probable"
+        explanation = "Work is likely genuine with minor irregularities."
     elif conf >= 0.25:
-        band = {
-            "band": "uncertain",
-            "label": "🟠 Uncertain",
-            "action": "review",
-            "explanation": "Mixed signals; optional manager review recommended."
-        }
+        band = "uncertain"
+        explanation = "Mixed signals; optional manager review recommended."
     else:
-        band = {
-            "band": "low_trust",
-            "label": "🔴 Low Trust",
-            "action": "clarify",
-            "explanation": "Insufficient evidence in this session."
-        }
+        band = "low_trust"
+        explanation = "Insufficient evidence in this session."
 
-    # Phase 8.1 — declarative policy binding
-    band["policy"] = TRUST_POLICY_MAP.get(band["band"], "monitor")
-    return band
+    return {
+        "band": band,
+        "label": band.replace("_", " ").title(),
+        "action": "accept" if band in ("verified", "probable") else "review",
+        "policy": TRUST_POLICY_MAP[band],
+        "explanation": explanation
+    }
 
 # --------------------------------
 # Submit proof
@@ -190,32 +170,18 @@ def trust_band(conf: float) -> dict:
 def submit_proof(proof: ProofIn):
     db = SessionLocal()
 
-    existing = (
-        db.query(Proof)
-        .filter(Proof.effort_hash == proof.effort_hash)
-        .first()
-    )
-    if existing:
+    if db.query(Proof).filter(
+        Proof.effort_hash == proof.effort_hash
+    ).first():
         db.close()
-        return {
-            "status": "duplicate_ignored",
-            "confidence": existing.confidence,
-            "fraud_flags": existing.flags.split(",") if existing.flags else []
-        }
+        return {"status": "duplicate_ignored"}
 
     backend_flags = fraud_checks(db, proof)
     all_flags = sorted(set(proof.flags + backend_flags))
 
-    base_conf = compute_base_confidence(
-        proof.effort_score,
-        all_flags
-    )
-
+    base_conf = compute_base_confidence(proof.effort_score, all_flags)
     adaptive_conf = apply_adaptive(
-        db,
-        proof.user_id,
-        base_conf,
-        proof.effort_score
+        db, proof.user_id, base_conf, proof.effort_score
     )
 
     record = Proof(
@@ -239,17 +205,7 @@ def submit_proof(proof: ProofIn):
     }
 
 # --------------------------------
-# Proofs
-# --------------------------------
-@app.get("/proofs")
-def get_proofs():
-    db = SessionLocal()
-    proofs = db.query(Proof).order_by(Proof.id.asc()).all()
-    db.close()
-    return proofs
-
-# --------------------------------
-# Decision (NOW WITH POLICY)
+# Decision (FIXED)
 # --------------------------------
 @app.get("/decision/{user_id}")
 def decision(user_id: str):
@@ -278,17 +234,6 @@ def decision(user_id: str):
         "session_confidence": round(avg_conf, 3),
         "windows": len(proofs),
         "decision": trust_band(avg_conf)
-    }
-
-# --------------------------------
-# POLICY — READ ONLY (PHASE 8.1)
-# --------------------------------
-@app.get("/policy")
-def policy():
-    return {
-        "version": "pilot-default-v1",
-        "description": "Declarative trust policy mapping (no enforcement)",
-        "policy_map": TRUST_POLICY_MAP
     }
 
 # --------------------------------
