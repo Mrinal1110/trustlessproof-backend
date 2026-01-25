@@ -1,10 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
-import uuid
+from uuid import uuid4
 
 from database import SessionLocal, engine
 from models import (
@@ -105,7 +105,7 @@ def create_invite_token(data: InviteTokenCreate):
         db.add(org)
 
     token = InviteToken(
-        id=f"tp_{uuid.uuid4().hex}",
+        id=f"tp_{uuid4().hex}",
         org_id=data.org_id,
         employee_id=data.employee_id,
         expires_at=datetime.utcnow() + timedelta(days=data.expiry_days),
@@ -125,30 +125,52 @@ def create_invite_token(data: InviteTokenCreate):
 
 
 # --------------------------------
-# Agent: activate
+# Agent: activate (FINAL, MULTI-ORG SAFE)
 # --------------------------------
-from uuid import uuid4
-from fastapi import HTTPException
-
 @app.post("/agent/activate")
-def activate_agent(payload: dict):
-    token = payload.get("token")
+def activate_agent(payload: AgentActivateIn):
+    db = SessionLocal()
 
-    if not token:
-        raise HTTPException(status_code=400, detail="Missing token")
+    invite = (
+        db.query(InviteToken)
+        .filter(
+            InviteToken.id == payload.token,
+            InviteToken.used == False,
+            InviteToken.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
 
-    # 🔓 Phase 12B: permissive activation
-    # NOTE: token validation will be added in Phase 13
+    if not invite:
+        db.close()
+        raise HTTPException(status_code=403, detail="Invalid or expired token")
 
     session_id = str(uuid4())
 
+    session = AgentSession(
+        id=session_id,
+        org_id=invite.org_id,
+        employee_id=invite.employee_id,
+        active=True,
+        created_at=datetime.utcnow(),
+        last_heartbeat=None,
+        expires_at=datetime.utcnow() + timedelta(minutes=10),
+    )
+
+    db.add(session)
+    invite.used = True
+    db.commit()
+    db.close()
+
     return {
-        "session_id": session_id
+        "session_id": session_id,
+        "org_id": invite.org_id,
+        "employee_id": invite.employee_id,
     }
 
 
 # --------------------------------
-# Agent: heartbeat
+# Agent: heartbeat (STRICT – UNCHANGED)
 # --------------------------------
 @app.post("/agent/heartbeat")
 def agent_heartbeat(session_id: str):
