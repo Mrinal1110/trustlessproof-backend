@@ -398,6 +398,23 @@ def export_pilot(org_id: str):
         }
     )
 
+# --------------------------------
+# Proof windows for chart (scoped)
+# --------------------------------
+@app.get("/proofs/{user_id}")
+def get_user_proofs(user_id: str):
+    db = SessionLocal()
+
+    proofs = (
+        db.query(Proof)
+        .filter(Proof.user_id == user_id)
+        .order_by(Proof.id.asc())
+        .all()
+    )
+
+    db.close()
+    return proofs
+
 
 # --------------------------------
 # Decision
