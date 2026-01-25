@@ -1,18 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
+import uuid
 
 from database import SessionLocal, engine
-from models import Proof, UserBaseline, ActionLog, Base
-
-TRUST_POLICY_MAP = {
-    "verified": "full_access",
-    "probable": "monitor",
-    "uncertain": "review_required",
-    "low_trust": "restricted"
-}
+from models import (
+    Proof, UserBaseline, Base,
+    Org, InviteToken, AgentSession
+)
 
 # --------------------------------
 # DB init
@@ -40,109 +38,48 @@ app.add_middleware(
 # --------------------------------
 # Schemas
 # --------------------------------
+class InviteTokenCreate(BaseModel):
+    org_id: str
+    employee_id: str
+    expiry_days: int = 7
+
+
+class AgentActivateIn(BaseModel):
+    token: str
+    agent_fingerprint: Optional[str] = None
+
+
 class ProofIn(BaseModel):
-    user_id: str
+    session_id: str
     effort_hash: str
     prev_hash: Optional[str] = None
     effort_score: float
     flags: List[str] = []
     timestamp: str
 
-# --------------------------------
-# Fraud checks
-# --------------------------------
-def fraud_checks(db, proof: ProofIn) -> list[str]:
-    flags = []
-
-    last = (
-        db.query(Proof)
-        .filter(Proof.user_id == proof.user_id)
-        .order_by(Proof.id.desc())
-        .first()
-    )
-
-    if last and proof.prev_hash != last.effort_hash:
-        flags.append("chain_break")
-
-    if db.query(Proof).filter(
-        Proof.effort_hash == proof.effort_hash
-    ).first():
-        flags.append("replay_detected")
-
-    if last:
-        try:
-            t1 = datetime.fromisoformat(last.timestamp)
-            t2 = datetime.fromisoformat(proof.timestamp)
-            if (t2 - t1).seconds > 1800:
-                flags.append("large_time_gap")
-        except Exception:
-            flags.append("timestamp_parse_error")
-
-    return flags
 
 # --------------------------------
-# Confidence logic
+# Trust policy
 # --------------------------------
-def compute_base_confidence(effort_score: float, flags: list[str]) -> float:
-    c = effort_score
-    if "chain_break" in flags:
-        c *= 0.4
-    if "replay_detected" in flags:
-        c *= 0.2
-    if "large_time_gap" in flags:
-        c *= 0.7
-    return round(min(c, 1.0), 3)
+TRUST_POLICY_MAP = {
+    "verified": "full_access",
+    "probable": "monitor",
+    "uncertain": "review_required",
+    "low_trust": "restricted"
+}
 
 # --------------------------------
-# Adaptive baseline
-# --------------------------------
-def apply_adaptive(db, user_id: str, base_conf: float, effort: float) -> float:
-    baseline = (
-        db.query(UserBaseline)
-        .filter(UserBaseline.user_id == user_id)
-        .first()
-    )
-
-    if not baseline:
-        baseline = UserBaseline(
-            user_id=user_id,
-            avg_effort=effort,
-            avg_confidence=base_conf,
-            samples=1
-        )
-        db.add(baseline)
-        db.commit()
-        return base_conf
-
-    norm = effort / max(baseline.avg_effort, 0.1)
-    norm = min(max(norm, 0.7), 1.3)
-
-    adaptive_conf = round(base_conf * norm, 3)
-
-    alpha = 0.1
-    baseline.avg_effort = (1 - alpha) * baseline.avg_effort + alpha * effort
-    baseline.avg_confidence = (1 - alpha) * baseline.avg_confidence + alpha * adaptive_conf
-    baseline.samples += 1
-
-    db.commit()
-    return min(adaptive_conf, 1.0)
-
-# --------------------------------
-# Trust band + policy
+# Helpers
 # --------------------------------
 def trust_band(conf: float) -> dict:
     if conf >= 0.65:
-        band = "verified"
-        explanation = "Strong continuous evidence of real human work."
+        band, explanation = "verified", "Strong continuous evidence of real human work."
     elif conf >= 0.45:
-        band = "probable"
-        explanation = "Work is likely genuine with minor irregularities."
+        band, explanation = "probable", "Work is likely genuine with minor irregularities."
     elif conf >= 0.25:
-        band = "uncertain"
-        explanation = "Mixed signals; optional manager review recommended."
+        band, explanation = "uncertain", "Mixed signals; optional manager review recommended."
     else:
-        band = "low_trust"
-        explanation = "Insufficient evidence in this session."
+        band, explanation = "low_trust", "Insufficient evidence in this session."
 
     return {
         "band": band,
@@ -152,141 +89,338 @@ def trust_band(conf: float) -> dict:
         "explanation": explanation
     }
 
-# --------------------------------
-# Policy (Declarative)
-# --------------------------------
-@app.get("/policy")
-def policy():
-    return {
-        "version": "pilot-default-v1",
-        "description": "Declarative trust policy mapping (no enforcement)",
-        "policy_map": TRUST_POLICY_MAP
-    }
 
 # --------------------------------
-# Submit proof
+# Internal: create invite token
+# --------------------------------
+@app.post("/internal/invite-token")
+def create_invite_token(data: InviteTokenCreate):
+    db = SessionLocal()
+
+    # auto-create org if missing (pilot convenience)
+    org = db.query(Org).filter(Org.id == data.org_id).first()
+    if not org:
+        org = Org(id=data.org_id, name=data.org_id, active=True)
+        db.add(org)
+
+    token = InviteToken(
+        id=f"tp_{uuid.uuid4().hex}",
+        org_id=data.org_id,
+        employee_id=data.employee_id,
+        expires_at=datetime.utcnow() + timedelta(days=data.expiry_days),
+        used=False
+    )
+
+    db.add(token)
+    db.commit()
+    
+    token_id = token.id
+    expires_at = token.expires_at.isoformat()
+
+    db.close()
+
+    return {
+        "token": token.id,
+        "expires_at": expires_at
+    }
+
+
+# --------------------------------
+# Agent activation
+# --------------------------------
+@app.post("/agent/activate")
+def activate_agent(data: AgentActivateIn):
+    db = SessionLocal()
+
+    token = db.query(InviteToken).filter(
+        InviteToken.id == data.token,
+        InviteToken.used == False
+    ).first()
+
+    if not token or token.expires_at < datetime.utcnow():
+        db.close()
+        return Response(status_code=403)
+
+    org = db.query(Org).filter(
+        Org.id == token.org_id,
+        Org.active == True
+    ).first()
+
+    if not org:
+        db.close()
+        return Response(status_code=403)
+
+    session = AgentSession(
+        id=f"sess_{uuid.uuid4().hex}",
+        org_id=token.org_id,
+        employee_id=token.employee_id,
+        expires_at=datetime.utcnow() + timedelta(days=1),
+        active=True
+    )
+
+    token.used = True
+    db.add(session)
+    db.commit()
+
+    session_id = session.id
+    employee_id = session.employee_id
+    expires_at = session.expires_at.isoformat()
+
+    db.close()
+
+    return {
+        "session_id": session_id,
+        "employee_id": employee_id,
+        "expires_at": expires_at
+    }
+
+
+# --------------------------------
+# Submit proof (ENFORCED)
 # --------------------------------
 @app.post("/submit_proof")
 def submit_proof(proof: ProofIn):
     db = SessionLocal()
 
-    if db.query(Proof).filter(
-        Proof.effort_hash == proof.effort_hash
-    ).first():
+    session = db.query(AgentSession).filter(
+        AgentSession.id == proof.session_id,
+        AgentSession.active == True,
+        AgentSession.expires_at > datetime.utcnow()
+    ).first()
+
+    if not session:
         db.close()
-        return {"status": "duplicate_ignored"}
+        return Response(status_code=403)
 
-    backend_flags = fraud_checks(db, proof)
-    all_flags = sorted(set(proof.flags + backend_flags))
+    user_id = session.employee_id
 
-    base_conf = compute_base_confidence(proof.effort_score, all_flags)
-    adaptive_conf = apply_adaptive(
-        db, proof.user_id, base_conf, proof.effort_score
+    last = (
+        db.query(Proof)
+        .filter(Proof.user_id == user_id)
+        .order_by(Proof.id.desc())
+        .first()
     )
 
-    record = Proof(
-        user_id=proof.user_id,
+    flags = proof.flags.copy()
+
+    if last and proof.prev_hash != last.effort_hash:
+        flags.append("chain_break")
+
+    base_conf = min(proof.effort_score, 1.0)
+
+    db.add(Proof(
+        user_id=user_id,
         effort_hash=proof.effort_hash,
         prev_hash=proof.prev_hash,
         effort_score=proof.effort_score,
-        confidence=adaptive_conf,
-        flags=",".join(all_flags),
-        timestamp=proof.timestamp,
-    )
+        confidence=base_conf,
+        flags=",".join(flags),
+        timestamp=proof.timestamp
+    ))
 
-    db.add(record)
+    db.commit()
+    db.close()
+
+    return {"status": "proof accepted", "confidence": base_conf}
+
+# --------------------------------
+# Internal: End pilot (org off)
+# --------------------------------
+@app.post("/internal/org/{org_id}/deactivate")
+def deactivate_org(org_id: str):
+    db = SessionLocal()
+
+    org = db.query(Org).filter(Org.id == org_id).first()
+    if not org:
+        db.close()
+        return {"status": "org_not_found"}
+
+    org.active = False
+
+    # kill all active sessions
+    db.query(AgentSession).filter(
+        AgentSession.org_id == org_id,
+        AgentSession.active == True
+    ).update({AgentSession.active: False})
+
     db.commit()
     db.close()
 
     return {
-        "status": "proof accepted",
-        "confidence": adaptive_conf,
-        "fraud_flags": all_flags
+        "status": "pilot_ended",
+        "org_id": org_id
     }
 
 # --------------------------------
-# Proofs (for charts)
+# Agent: renew session
 # --------------------------------
-@app.get("/proofs")
-def get_proofs():
+@app.post("/agent/renew")
+def renew_session(session_id: str):
     db = SessionLocal()
-    proofs = db.query(Proof).order_by(Proof.id.asc()).all()
+
+    session = db.query(AgentSession).filter(
+        AgentSession.id == session_id,
+        AgentSession.active == True
+    ).first()
+
+    if not session:
+        db.close()
+        return Response(status_code=403)
+
+    org = db.query(Org).filter(
+        Org.id == session.org_id,
+        Org.active == True
+    ).first()
+
+    if not org:
+        db.close()
+        return Response(status_code=403)
+
+    session.expires_at = datetime.utcnow() + timedelta(days=1)
+    db.commit()
+
+    expires_at = session.expires_at.isoformat()
     db.close()
-    return proofs
+
+    return {
+        "session_id": session.id,
+        "expires_at": expires_at
+    }
 
 # --------------------------------
-# Decision + Action Log (NEW)
+# Pilot Outcome (Executive Summary)
+# --------------------------------
+@app.get("/pilot/outcome/{org_id}")
+def pilot_outcome(org_id: str):
+    db = SessionLocal()
+
+    org = db.query(Org).filter(Org.id == org_id).first()
+    if not org:
+        db.close()
+        return {"status": "org_not_found"}
+
+    # collect all employees seen under this org
+    sessions = db.query(AgentSession).filter(
+        AgentSession.org_id == org_id
+    ).all()
+
+    employee_ids = list(set(s.employee_id for s in sessions))
+
+    results = []
+    band_counts = {
+        "verified": 0,
+        "probable": 0,
+        "uncertain": 0,
+        "low_trust": 0
+    }
+
+    confidences = []
+
+    for user_id in employee_ids:
+        proofs = db.query(Proof).filter(
+            Proof.user_id == user_id
+        ).order_by(Proof.id.desc()).limit(50).all()
+
+        if not proofs:
+            band = "low_trust"
+            avg_conf = 0.0
+        else:
+            avg_conf = sum(p.confidence for p in proofs) / len(proofs)
+            band = trust_band(avg_conf)["band"]
+
+        band_counts[band] += 1
+        confidences.append(avg_conf)
+
+        results.append({
+            "employee_id": user_id,
+            "band": band,
+            "confidence": round(avg_conf, 3)
+        })
+
+    avg_confidence = round(
+        sum(confidences) / max(len(confidences), 1), 3
+    )
+
+    summary = {
+        "org_id": org_id,
+        "employees_evaluated": len(employee_ids),
+        "average_confidence": avg_confidence,
+        "band_distribution": band_counts,
+        "executive_summary": (
+            "Overall trust signals are strong."
+            if band_counts["low_trust"] == 0
+            else "Some trust risks detected. Review recommended."
+        ),
+        "results": results
+    }
+
+    db.close()
+    return summary
+
+# --------------------------------
+# Pilot Export (CSV)
+# --------------------------------
+@app.get("/pilot/export/{org_id}")
+def export_pilot(org_id: str):
+    db = SessionLocal()
+
+    sessions = db.query(AgentSession).filter(
+        AgentSession.org_id == org_id
+    ).all()
+
+    employee_ids = list(set(s.employee_id for s in sessions))
+
+    output = []
+    output.append("employee_id,band,confidence")
+
+    for user_id in employee_ids:
+        proofs = db.query(Proof).filter(
+            Proof.user_id == user_id
+        ).order_by(Proof.id.desc()).limit(50).all()
+
+        if not proofs:
+            avg_conf = 0.0
+            band = "low_trust"
+        else:
+            avg_conf = sum(p.confidence for p in proofs) / len(proofs)
+            band = trust_band(avg_conf)["band"]
+
+        output.append(f"{user_id},{band},{round(avg_conf,3)}")
+
+    csv_data = "\n".join(output)
+    db.close()
+
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=trustlessproof_{org_id}_pilot.csv"
+        }
+    )
+
+
+# --------------------------------
+# Decision
 # --------------------------------
 @app.get("/decision/{user_id}")
 def decision(user_id: str):
     db = SessionLocal()
-
-    proofs = (
-        db.query(Proof)
-        .filter(Proof.user_id == user_id)
-        .order_by(Proof.id.desc())
-        .limit(50)
-        .all()
-    )
+    proofs = db.query(Proof).filter(
+        Proof.user_id == user_id
+    ).order_by(Proof.id.desc()).limit(50).all()
 
     if not proofs:
-        decision_data = trust_band(0.0)
-    else:
-        avg_conf = sum(p.confidence for p in proofs) / len(proofs)
-        decision_data = trust_band(avg_conf)
+        db.close()
+        return {"session_confidence": 0.0, "windows": 0, "decision": trust_band(0.0)}
 
-    # ---- Action log (only if band changed) ----
-    last = (
-        db.query(ActionLog)
-        .filter(ActionLog.user_id == user_id)
-        .order_by(ActionLog.id.desc())
-        .first()
-    )
-
-    if not last or last.band != decision_data["band"]:
-        log = ActionLog(
-            user_id=user_id,
-            band=decision_data["band"],
-            policy=decision_data["policy"],
-            message=f"{decision_data['label']} — {decision_data['policy']}"
-        )
-        db.add(log)
-        db.commit()
-
+    avg = sum(p.confidence for p in proofs) / len(proofs)
     db.close()
-
     return {
-        "session_confidence": round(
-            sum(p.confidence for p in proofs) / len(proofs), 3
-        ) if proofs else 0.0,
+        "session_confidence": round(avg, 3),
         "windows": len(proofs),
-        "decision": decision_data
+        "decision": trust_band(avg)
     }
 
-# --------------------------------
-# Action Log (READ)
-# --------------------------------
-@app.get("/actions/{user_id}")
-def actions(user_id: str):
-    db = SessionLocal()
-    logs = (
-        db.query(ActionLog)
-        .filter(ActionLog.user_id == user_id)
-        .order_by(ActionLog.id.desc())
-        .limit(20)
-        .all()
-    )
-    db.close()
-
-    return [
-        {
-            "band": l.band,
-            "policy": l.policy,
-            "message": l.message,
-            "timestamp": l.timestamp.isoformat() + "Z"
-        }
-        for l in logs
-    ]
 
 # --------------------------------
 # Health

@@ -1,6 +1,10 @@
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime
 from database import Base
+from datetime import datetime
 
+# -------------------------
+# Proofs
+# -------------------------
 class Proof(Base):
     __tablename__ = "proofs"
 
@@ -17,6 +21,9 @@ class Proof(Base):
     timestamp = Column(String)
 
 
+# -------------------------
+# Adaptive Baseline
+# -------------------------
 class UserBaseline(Base):
     __tablename__ = "user_baselines"
 
@@ -27,9 +34,10 @@ class UserBaseline(Base):
     avg_confidence = Column(Float)
     samples = Column(Integer)
 
-from sqlalchemy import Column, Integer, String, DateTime
-from datetime import datetime
 
+# -------------------------
+# Action Log (future)
+# -------------------------
 class ActionLog(Base):
     __tablename__ = "action_logs"
 
@@ -39,3 +47,38 @@ class ActionLog(Base):
     policy = Column(String)
     message = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+# =============================
+# 🔐 IDENTITY & AUTHORITY
+# =============================
+class Org(Base):
+    __tablename__ = "orgs"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String)
+    active = Column(Boolean, default=True)
+
+
+class InviteToken(Base):
+    __tablename__ = "invite_tokens"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, index=True)
+    employee_id = Column(String, index=True)
+
+    expires_at = Column(DateTime)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, index=True)
+    employee_id = Column(String, index=True)
+
+    expires_at = Column(DateTime)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
