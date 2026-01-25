@@ -8,8 +8,12 @@ import uuid
 
 from database import SessionLocal, engine
 from models import (
-    Proof, UserBaseline, Base,
-    Org, InviteToken, AgentSession
+    Proof,
+    UserBaseline,
+    Base,
+    Org,
+    InviteToken,
+    AgentSession,
 )
 
 # --------------------------------
@@ -65,12 +69,10 @@ TRUST_POLICY_MAP = {
     "verified": "full_access",
     "probable": "monitor",
     "uncertain": "review_required",
-    "low_trust": "restricted"
+    "low_trust": "restricted",
 }
 
-# --------------------------------
-# Helpers
-# --------------------------------
+
 def trust_band(conf: float) -> dict:
     if conf >= 0.65:
         band, explanation = "verified", "Strong continuous evidence of real human work."
@@ -86,7 +88,7 @@ def trust_band(conf: float) -> dict:
         "label": band.replace("_", " ").title(),
         "action": "accept" if band in ("verified", "probable") else "review",
         "policy": TRUST_POLICY_MAP[band],
-        "explanation": explanation
+        "explanation": explanation,
     }
 
 
@@ -97,7 +99,6 @@ def trust_band(conf: float) -> dict:
 def create_invite_token(data: InviteTokenCreate):
     db = SessionLocal()
 
-    # auto-create org if missing (pilot convenience)
     org = db.query(Org).filter(Org.id == data.org_id).first()
     if not org:
         org = Org(id=data.org_id, name=data.org_id, active=True)
@@ -108,36 +109,39 @@ def create_invite_token(data: InviteTokenCreate):
         org_id=data.org_id,
         employee_id=data.employee_id,
         expires_at=datetime.utcnow() + timedelta(days=data.expiry_days),
-        used=False
+        used=False,
     )
 
     db.add(token)
     db.commit()
-    
-    token_id = token.id
-    expires_at = token.expires_at.isoformat()
+
+    out = {
+        "token": token.id,
+        "expires_at": token.expires_at.isoformat(),
+    }
 
     db.close()
-
-    return {
-        "token": token.id,
-        "expires_at": expires_at
-    }
+    return out
 
 
 # --------------------------------
-# Agent activation
+# Agent: activate
 # --------------------------------
 @app.post("/agent/activate")
 def activate_agent(data: AgentActivateIn):
     db = SessionLocal()
 
-    token = db.query(InviteToken).filter(
-        InviteToken.id == data.token,
-        InviteToken.used == False
-    ).first()
+    token = (
+        db.query(InviteToken)
+        .filter(
+            InviteToken.id == data.token,
+            InviteToken.used == False,
+            InviteToken.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
 
-    if not token or token.expires_at < datetime.utcnow():
+    if not token:
         db.close()
         return Response(status_code=403)
 
@@ -154,25 +158,96 @@ def activate_agent(data: AgentActivateIn):
         id=f"sess_{uuid.uuid4().hex}",
         org_id=token.org_id,
         employee_id=token.employee_id,
-        expires_at=datetime.utcnow() + timedelta(days=1),
-        active=True
+        expires_at=datetime.utcnow() + timedelta(minutes=10),
+        last_heartbeat=datetime.utcnow(),
+        active=True,
     )
 
     token.used = True
     db.add(session)
     db.commit()
 
-    session_id = session.id
-    employee_id = session.employee_id
-    expires_at = session.expires_at.isoformat()
+    out = {
+        "session_id": session.id,
+        "employee_id": session.employee_id,
+        "expires_at": session.expires_at.isoformat(),
+    }
 
     db.close()
+    return out
 
-    return {
-        "session_id": session_id,
-        "employee_id": employee_id,
-        "expires_at": expires_at
+
+# --------------------------------
+# Agent: heartbeat
+# --------------------------------
+@app.post("/agent/heartbeat")
+def agent_heartbeat(session_id: str):
+    db = SessionLocal()
+
+    session = (
+        db.query(AgentSession)
+        .filter(
+            AgentSession.id == session_id,
+            AgentSession.active == True,
+            AgentSession.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+
+    if not session:
+        db.close()
+        return Response(status_code=403)
+
+    session.last_heartbeat = datetime.utcnow()
+    session.expires_at = datetime.utcnow() + timedelta(minutes=10)
+
+    db.commit()
+
+    out = {
+        "status": "alive",
+        "session_id": session.id,
+        "expires_at": session.expires_at.isoformat(),
     }
+
+    db.close()
+    return out
+
+
+# --------------------------------
+# Agent: status (org-scoped)
+# --------------------------------
+@app.get("/agent/status/{org_id}")
+def agent_status(org_id: str):
+    db = SessionLocal()
+    now = datetime.utcnow()
+
+    sessions = db.query(AgentSession).filter(
+        AgentSession.org_id == org_id
+    ).all()
+
+    result = []
+
+    for s in sessions:
+        if not s.active:
+            state = "OFFLINE"
+        elif not s.last_heartbeat:
+            state = "INSTALLED"
+        elif now - s.last_heartbeat > timedelta(minutes=5):
+            state = "STALE"
+        else:
+            state = "ACTIVE"
+
+        result.append({
+            "employee_id": s.employee_id,
+            "state": state,
+            "last_heartbeat": (
+                s.last_heartbeat.isoformat()
+                if s.last_heartbeat else None
+            ),
+        })
+
+    db.close()
+    return result
 
 
 # --------------------------------
@@ -185,221 +260,79 @@ def submit_proof(proof: ProofIn):
     session = db.query(AgentSession).filter(
         AgentSession.id == proof.session_id,
         AgentSession.active == True,
-        AgentSession.expires_at > datetime.utcnow()
+        AgentSession.expires_at > datetime.utcnow(),
     ).first()
 
     if not session:
         db.close()
         return Response(status_code=403)
 
-    user_id = session.employee_id
-
     last = (
         db.query(Proof)
-        .filter(Proof.user_id == user_id)
+        .filter(Proof.user_id == session.employee_id)
         .order_by(Proof.id.desc())
         .first()
     )
 
     flags = proof.flags.copy()
-
     if last and proof.prev_hash != last.effort_hash:
         flags.append("chain_break")
 
-    base_conf = min(proof.effort_score, 1.0)
+    conf = min(proof.effort_score, 1.0)
 
-    db.add(Proof(
-        user_id=user_id,
-        effort_hash=proof.effort_hash,
-        prev_hash=proof.prev_hash,
-        effort_score=proof.effort_score,
-        confidence=base_conf,
-        flags=",".join(flags),
-        timestamp=proof.timestamp
-    ))
-
-    db.commit()
-    db.close()
-
-    return {"status": "proof accepted", "confidence": base_conf}
-
-# --------------------------------
-# Internal: End pilot (org off)
-# --------------------------------
-@app.post("/internal/org/{org_id}/deactivate")
-def deactivate_org(org_id: str):
-    db = SessionLocal()
-
-    org = db.query(Org).filter(Org.id == org_id).first()
-    if not org:
-        db.close()
-        return {"status": "org_not_found"}
-
-    org.active = False
-
-    # kill all active sessions
-    db.query(AgentSession).filter(
-        AgentSession.org_id == org_id,
-        AgentSession.active == True
-    ).update({AgentSession.active: False})
-
-    db.commit()
-    db.close()
-
-    return {
-        "status": "pilot_ended",
-        "org_id": org_id
-    }
-
-# --------------------------------
-# Agent: renew session
-# --------------------------------
-@app.post("/agent/renew")
-def renew_session(session_id: str):
-    db = SessionLocal()
-
-    session = db.query(AgentSession).filter(
-        AgentSession.id == session_id,
-        AgentSession.active == True
-    ).first()
-
-    if not session:
-        db.close()
-        return Response(status_code=403)
-
-    org = db.query(Org).filter(
-        Org.id == session.org_id,
-        Org.active == True
-    ).first()
-
-    if not org:
-        db.close()
-        return Response(status_code=403)
-
-    session.expires_at = datetime.utcnow() + timedelta(days=1)
-    db.commit()
-
-    expires_at = session.expires_at.isoformat()
-    db.close()
-
-    return {
-        "session_id": session.id,
-        "expires_at": expires_at
-    }
-
-# --------------------------------
-# Pilot Outcome (Executive Summary)
-# --------------------------------
-@app.get("/pilot/outcome/{org_id}")
-def pilot_outcome(org_id: str):
-    db = SessionLocal()
-
-    org = db.query(Org).filter(Org.id == org_id).first()
-    if not org:
-        db.close()
-        return {"status": "org_not_found"}
-
-    # collect all employees seen under this org
-    sessions = db.query(AgentSession).filter(
-        AgentSession.org_id == org_id
-    ).all()
-
-    employee_ids = list(set(s.employee_id for s in sessions))
-
-    results = []
-    band_counts = {
-        "verified": 0,
-        "probable": 0,
-        "uncertain": 0,
-        "low_trust": 0
-    }
-
-    confidences = []
-
-    for user_id in employee_ids:
-        proofs = db.query(Proof).filter(
-            Proof.user_id == user_id
-        ).order_by(Proof.id.desc()).limit(50).all()
-
-        if not proofs:
-            band = "low_trust"
-            avg_conf = 0.0
-        else:
-            avg_conf = sum(p.confidence for p in proofs) / len(proofs)
-            band = trust_band(avg_conf)["band"]
-
-        band_counts[band] += 1
-        confidences.append(avg_conf)
-
-        results.append({
-            "employee_id": user_id,
-            "band": band,
-            "confidence": round(avg_conf, 3)
-        })
-
-    avg_confidence = round(
-        sum(confidences) / max(len(confidences), 1), 3
+    db.add(
+        Proof(
+            user_id=session.employee_id,
+            effort_hash=proof.effort_hash,
+            prev_hash=proof.prev_hash,
+            effort_score=proof.effort_score,
+            confidence=conf,
+            flags=",".join(flags),
+            timestamp=proof.timestamp,
+        )
     )
 
-    summary = {
-        "org_id": org_id,
-        "employees_evaluated": len(employee_ids),
-        "average_confidence": avg_confidence,
-        "band_distribution": band_counts,
-        "executive_summary": (
-            "Overall trust signals are strong."
-            if band_counts["low_trust"] == 0
-            else "Some trust risks detected. Review recommended."
-        ),
-        "results": results
-    }
-
+    db.commit()
     db.close()
-    return summary
+
+    return {"status": "proof accepted", "confidence": conf}
+
 
 # --------------------------------
-# Pilot Export (CSV)
+# Decision
 # --------------------------------
-@app.get("/pilot/export/{org_id}")
-def export_pilot(org_id: str):
+@app.get("/decision/{user_id}")
+def decision(user_id: str):
     db = SessionLocal()
 
-    sessions = db.query(AgentSession).filter(
-        AgentSession.org_id == org_id
-    ).all()
+    proofs = (
+        db.query(Proof)
+        .filter(Proof.user_id == user_id)
+        .order_by(Proof.id.desc())
+        .limit(50)
+        .all()
+    )
 
-    employee_ids = list(set(s.employee_id for s in sessions))
-
-    output = []
-    output.append("employee_id,band,confidence")
-
-    for user_id in employee_ids:
-        proofs = db.query(Proof).filter(
-            Proof.user_id == user_id
-        ).order_by(Proof.id.desc()).limit(50).all()
-
-        if not proofs:
-            avg_conf = 0.0
-            band = "low_trust"
-        else:
-            avg_conf = sum(p.confidence for p in proofs) / len(proofs)
-            band = trust_band(avg_conf)["band"]
-
-        output.append(f"{user_id},{band},{round(avg_conf,3)}")
-
-    csv_data = "\n".join(output)
-    db.close()
-
-    return Response(
-        content=csv_data,
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=trustlessproof_{org_id}_pilot.csv"
+    if not proofs:
+        db.close()
+        return {
+            "session_confidence": 0.0,
+            "windows": 0,
+            "decision": trust_band(0.0),
         }
-    )
+
+    avg = sum(p.confidence for p in proofs) / len(proofs)
+    db.close()
+
+    return {
+        "session_confidence": round(avg, 3),
+        "windows": len(proofs),
+        "decision": trust_band(avg),
+    }
+
 
 # --------------------------------
-# Proof windows for chart (scoped)
+# Proofs
 # --------------------------------
 @app.get("/proofs/{user_id}")
 def get_user_proofs(user_id: str):
@@ -414,29 +347,6 @@ def get_user_proofs(user_id: str):
 
     db.close()
     return proofs
-
-
-# --------------------------------
-# Decision
-# --------------------------------
-@app.get("/decision/{user_id}")
-def decision(user_id: str):
-    db = SessionLocal()
-    proofs = db.query(Proof).filter(
-        Proof.user_id == user_id
-    ).order_by(Proof.id.desc()).limit(50).all()
-
-    if not proofs:
-        db.close()
-        return {"session_confidence": 0.0, "windows": 0, "decision": trust_band(0.0)}
-
-    avg = sum(p.confidence for p in proofs) / len(proofs)
-    db.close()
-    return {
-        "session_confidence": round(avg, 3),
-        "windows": len(proofs),
-        "decision": trust_band(avg)
-    }
 
 
 # --------------------------------

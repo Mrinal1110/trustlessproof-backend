@@ -80,5 +80,7 @@ class AgentSession(Base):
     employee_id = Column(String, index=True)
 
     expires_at = Column(DateTime)
+    last_heartbeat = Column(DateTime, nullable=True)
+
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
