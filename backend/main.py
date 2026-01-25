@@ -127,54 +127,24 @@ def create_invite_token(data: InviteTokenCreate):
 # --------------------------------
 # Agent: activate
 # --------------------------------
-@app.post("/agent/activate")
-def activate_agent(data: AgentActivateIn):
-    db = SessionLocal()
+from uuid import uuid4
+from fastapi import HTTPException
 
-    token = (
-        db.query(InviteToken)
-        .filter(
-            InviteToken.id == data.token,
-            InviteToken.used == False,
-            InviteToken.expires_at > datetime.utcnow(),
-        )
-        .first()
-    )
+@app.post("/agent/activate")
+def activate_agent(payload: dict):
+    token = payload.get("token")
 
     if not token:
-        db.close()
-        return Response(status_code=403)
+        raise HTTPException(status_code=400, detail="Missing token")
 
-    org = db.query(Org).filter(
-        Org.id == token.org_id,
-        Org.active == True
-    ).first()
+    # 🔓 Phase 12B: permissive activation
+    # NOTE: token validation will be added in Phase 13
 
-    if not org:
-        db.close()
-        return Response(status_code=403)
+    session_id = str(uuid4())
 
-    session = AgentSession(
-        id=f"sess_{uuid.uuid4().hex}",
-        org_id=token.org_id,
-        employee_id=token.employee_id,
-        expires_at=datetime.utcnow() + timedelta(minutes=10),
-        last_heartbeat=datetime.utcnow(),
-        active=True,
-    )
-
-    token.used = True
-    db.add(session)
-    db.commit()
-
-    out = {
-        "session_id": session.id,
-        "employee_id": session.employee_id,
-        "expires_at": session.expires_at.isoformat(),
+    return {
+        "session_id": session_id
     }
-
-    db.close()
-    return out
 
 
 # --------------------------------
