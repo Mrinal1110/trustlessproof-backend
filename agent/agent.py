@@ -9,11 +9,8 @@ STATE_DIR = Path.home() / ".trustlessproof"
 CONFIG_PATH = STATE_DIR / "agent.json"
 SESSION_PATH = STATE_DIR / "session.json"
 
-# -----------------------
-# Load config
-# -----------------------
 if not CONFIG_PATH.exists() or not SESSION_PATH.exists():
-    print("❌ Agent config or session missing")
+    print("❌ Missing agent state. Exiting.")
     sys.exit(1)
 
 with open(CONFIG_PATH) as f:
@@ -32,28 +29,18 @@ print("Org      :", ORG_ID)
 print("Employee :", EMPLOYEE_ID)
 print("Session  :", SESSION_ID)
 
-# -----------------------
-# Heartbeat loop
-# -----------------------
 while True:
     try:
-        hb = requests.post(
+        r = requests.post(
             f"{API_BASE}/agent/heartbeat",
             params={"session_id": SESSION_ID},
             timeout=5
         )
 
-        if hb.status_code == 200:
-            print(
-                "💓 Heartbeat OK @",
-                datetime.now(timezone.utc).isoformat()
-            )
+        if r.status_code == 200:
+            print("💓 Heartbeat OK @", datetime.now(timezone.utc).isoformat())
         else:
-            print(
-                "⚠ Heartbeat rejected:",
-                hb.status_code,
-                hb.text
-            )
+            print("⚠ Heartbeat rejected:", r.status_code, r.text)
 
     except Exception as e:
         print("⚠ Heartbeat error:", e)
