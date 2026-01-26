@@ -157,12 +157,16 @@ def activate_agent(payload: AgentActivateIn):
         if invite.expires_at and invite.expires_at < datetime.utcnow():
             raise HTTPException(status_code=403, detail="Token expired")
 
+        # 🔑 COPY VALUES BEFORE COMMIT
+        org_id = invite.org_id
+        employee_id = invite.employee_id
+
         session_id = str(uuid4())
 
         session = AgentSession(
             id=session_id,
-            org_id=invite.org_id,
-            employee_id=invite.employee_id,
+            org_id=org_id,
+            employee_id=employee_id,
             active=True,
             created_at=datetime.utcnow(),
             last_heartbeat=None,
@@ -175,8 +179,8 @@ def activate_agent(payload: AgentActivateIn):
 
         return {
             "session_id": session_id,
-            "org_id": invite.org_id,
-            "employee_id": invite.employee_id,
+            "org_id": org_id,
+            "employee_id": employee_id,
         }
 
     except HTTPException:
