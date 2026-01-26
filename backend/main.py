@@ -3,15 +3,22 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 from database import SessionLocal, engine
-from models import Base, Org, InviteToken, AgentSession, Proof
+from models import (
+    Base,
+    Org,
+    InviteToken,
+    AgentSession,
+    Proof,
+    UserBaseline,
+)
 
 # --------------------------------
-# DB INIT (SAFE)
+# DB INIT
 # --------------------------------
 RESET_DB = os.getenv("RESET_DB") == "true"
 
@@ -49,6 +56,21 @@ class AgentActivateIn(BaseModel):
     user_id: str
 
 
+class ProofIn(BaseModel):
+    user_id: str
+    effort_hash: str
+    prev_hash: Optional[str]
+    effort_score: float
+    flags: list = []
+    timestamp: str
+
+
+class ProofOut(BaseModel):
+    effort_hash: str
+    effort_score: float
+    confidence: float
+    timestamp: str
+
 # --------------------------------
 # CREATE INVITE TOKEN
 # --------------------------------
@@ -79,9 +101,8 @@ def create_invite_token(data: InviteTokenCreate):
     finally:
         db.close()
 
-
 # --------------------------------
-# 🔐 AGENT ACTIVATE (FIXED)
+# AGENT ACTIVATE
 # --------------------------------
 @app.post("/agent/activate")
 def activate_agent(data: AgentActivateIn):
@@ -119,13 +140,10 @@ def activate_agent(data: AgentActivateIn):
         return {
             "status": "activated",
             "session_id": session.id,
-            "org_id": session.org_id,
-            "employee_id": session.employee_id,
             "expires_at": session.expires_at.isoformat(),
         }
     finally:
         db.close()
-
 
 # --------------------------------
 # AGENT HEARTBEAT
@@ -152,48 +170,116 @@ def agent_heartbeat(session_id: str):
 
         return {
             "status": "alive",
-            "session_id": session.id,
             "expires_at": session.expires_at.isoformat(),
         }
     finally:
         db.close()
 
 # --------------------------------
-# AGENT STATUS (ORG SCOPED)
+# AGENT STATUS
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
     db = SessionLocal()
     now = datetime.utcnow()
-
     try:
-        sessions = (
-            db.query(AgentSession)
-            .filter(AgentSession.org_id == org_id)
-            .all()
-        )
+        sessions = db.query(AgentSession).filter(
+            AgentSession.org_id == org_id
+        ).all()
 
-        result = []
-
-        for s in sessions:
-            if not s.active:
-                state = "OFFLINE"
-            elif s.expires_at < now:
-                state = "EXPIRED"
-            else:
-                state = "ACTIVE"
-
-            result.append({
+        return [
+            {
                 "employee_id": s.employee_id,
-                "state": state,
+                "state": "ACTIVE" if s.expires_at > now else "EXPIRED",
                 "expires_at": s.expires_at.isoformat(),
-            })
-
-        return result
-
+            }
+            for s in sessions
+        ]
     finally:
         db.close()
 
+# --------------------------------
+# 🧠 SUBMIT PROOF (Phase 15.1)
+# --------------------------------
+@app.post("/submit_proof")
+def submit_proof(data: ProofIn):
+    db = SessionLocal()
+    try:
+        # Load or init baseline
+        baseline = (
+            db.query(UserBaseline)
+            .filter(UserBaseline.user_id == data.user_id)
+            .first()
+        )
+
+        if not baseline:
+            baseline = UserBaseline(
+                user_id=data.user_id,
+                avg_effort=data.effort_score,
+                avg_confidence=data.effort_score,
+                samples=1,
+            )
+            confidence = data.effort_score
+            db.add(baseline)
+        else:
+            confidence = (
+                baseline.avg_confidence * baseline.samples + data.effort_score
+            ) / (baseline.samples + 1)
+
+            baseline.avg_confidence = confidence
+            baseline.avg_effort = (
+                baseline.avg_effort * baseline.samples + data.effort_score
+            ) / (baseline.samples + 1)
+            baseline.samples += 1
+
+        proof = Proof(
+            user_id=data.user_id,
+            effort_hash=data.effort_hash,
+            prev_hash=data.prev_hash,
+            effort_score=data.effort_score,
+            confidence=confidence,
+            flags=",".join(data.flags),
+            timestamp=data.timestamp,
+        )
+
+        db.add(proof)
+        db.commit()
+
+        return {
+            "status": "accepted",
+            "confidence": confidence,
+        }
+    finally:
+        db.close()
+
+# --------------------------------
+# 📤 GET PROOFS
+# --------------------------------
+@app.get("/proofs/{user_id}", response_model=List[ProofOut])
+def get_proofs(user_id: str):
+    db = SessionLocal()
+    try:
+        proofs = (
+            db.query(Proof)
+            .filter(Proof.user_id == user_id)
+            .order_by(Proof.id.asc())
+            .all()
+        )
+
+        if not proofs:
+            raise HTTPException(status_code=404, detail="No proofs found")
+
+        return [
+            {
+                "effort_hash": p.effort_hash,
+                "effort_score": p.effort_score,
+                "confidence": p.confidence,
+                "timestamp": p.timestamp,
+            }
+            for p in proofs
+        ]
+    finally:
+        db.close()
 
 # --------------------------------
 # HEALTH
