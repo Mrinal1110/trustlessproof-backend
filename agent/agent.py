@@ -3,12 +3,17 @@ import json
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 
 CONFIG_PATH = Path.home() / ".trustlessproof" / "agent.json"
 
 # -----------------------
 # Load config
 # -----------------------
+if not CONFIG_PATH.exists():
+    print("❌ Agent config not found:", CONFIG_PATH)
+    sys.exit(1)
+
 with open(CONFIG_PATH) as f:
     cfg = json.load(f)
 
@@ -17,7 +22,7 @@ EMPLOYEE_ID = cfg["employee_id"]
 TOKEN = cfg["token"]
 API_BASE = cfg["api_base"]
 
-print("🟢 TrustlessProof Agent Running")
+print("🟢 TrustlessProof Agent Started")
 print("Org      :", ORG_ID)
 print("Employee :", EMPLOYEE_ID)
 
@@ -26,13 +31,17 @@ print("Employee :", EMPLOYEE_ID)
 # -----------------------
 r = requests.post(
     f"{API_BASE}/agent/activate",
-    json={"token": TOKEN},
+    json={
+        "token": TOKEN,
+        "org_id": ORG_ID,
+        "user_id": EMPLOYEE_ID
+    },
     timeout=10
 )
 
 if r.status_code != 200:
-    print("❌ Activation failed")
-    exit(1)
+    print("❌ Activation failed:", r.text)
+    sys.exit(1)
 
 session = r.json()["session_id"]
 print("🔐 Session:", session)
@@ -54,7 +63,7 @@ while True:
                 datetime.now(timezone.utc).isoformat()
             )
         else:
-            print("⚠ Heartbeat rejected")
+            print("⚠ Heartbeat rejected:", hb.status_code)
 
     except Exception as e:
         print("⚠ Heartbeat error:", e)
