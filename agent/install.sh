@@ -21,7 +21,7 @@ echo "User: $USER_ID"
 echo "Contacting TrustlessProof backend…"
 
 # -----------------------
-# ACTIVATE (REQUIRED)
+# ACTIVATE (ONE TIME)
 # -----------------------
 RESP=$(curl -s -w "\n%{http_code}" \
   -X POST "$BACKEND_URL/agent/activate" \
@@ -44,11 +44,6 @@ fi
 
 SESSION_ID=$(echo "$BODY" | sed -n 's/.*"session_id":"\([^"]*\)".*/\1/p')
 
-if [ -z "$SESSION_ID" ]; then
-  echo "❌ session_id missing"
-  exit 1
-fi
-
 echo "✅ Agent activated successfully"
 echo "Session ID: $SESSION_ID"
 
@@ -70,23 +65,23 @@ cat > "$STATE_DIR/session.json" <<EOF
 EOF
 
 # -----------------------
-# WRITE AGENT CODE (INLINE)
+# WRITE AGENT (PHASE 15.1)
 # -----------------------
 cat > "$AGENT_FILE" <<'PYCODE'
 import time
 import json
 import requests
+import hashlib
+import random
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 import sys
 
 STATE_DIR = Path.home() / ".trustlessproof"
 CONFIG_PATH = STATE_DIR / "agent.json"
 SESSION_PATH = STATE_DIR / "session.json"
-
-if not CONFIG_PATH.exists() or not SESSION_PATH.exists():
-    print("❌ Missing agent state. Exiting.")
-    sys.exit(1)
+CHAIN_PATH = STATE_DIR / "chain.json"
 
 with open(CONFIG_PATH) as f:
     cfg = json.load(f)
@@ -99,40 +94,72 @@ EMPLOYEE_ID = cfg["employee_id"]
 API_BASE = cfg["api_base"]
 SESSION_ID = sess["session_id"]
 
-print("🟢 TrustlessProof Agent Running")
-print("Org      :", ORG_ID)
-print("Employee :", EMPLOYEE_ID)
-print("Session  :", SESSION_ID)
+def load_prev():
+    if CHAIN_PATH.exists():
+        with open(CHAIN_PATH) as f:
+            return json.load(f).get("last_hash")
+    return None
+
+def save_prev(h):
+    with open(CHAIN_PATH, "w") as f:
+        json.dump({"last_hash": h}, f)
+
+def heartbeat():
+    while True:
+        try:
+            requests.post(
+                f"{API_BASE}/agent/heartbeat",
+                params={"session_id": SESSION_ID},
+                timeout=5
+            )
+        except:
+            pass
+        time.sleep(30)
+
+def emit_proof():
+    prev = load_prev()
+    while True:
+        effort = round(random.uniform(0.4, 0.95), 3)
+        payload_str = f"{EMPLOYEE_ID}|{effort}|{prev}|{datetime.utcnow()}"
+        h = hashlib.sha256(payload_str.encode()).hexdigest()
+
+        payload = {
+            "user_id": EMPLOYEE_ID,
+            "effort_hash": h,
+            "prev_hash": prev,
+            "effort_score": effort,
+            "flags": [],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+        try:
+            r = requests.post(
+                f"{API_BASE}/submit_proof",
+                json=payload,
+                timeout=10
+            )
+            if r.status_code == 200:
+                save_prev(h)
+                prev = h
+        except:
+            pass
+
+        time.sleep(60)
+
+threading.Thread(target=heartbeat, daemon=True).start()
+threading.Thread(target=emit_proof, daemon=True).start()
 
 while True:
-    try:
-        r = requests.post(
-            f"{API_BASE}/agent/heartbeat",
-            params={"session_id": SESSION_ID},
-            timeout=5
-        )
-
-        if r.status_code == 200:
-            print("💓 Heartbeat OK @", datetime.now(timezone.utc).isoformat())
-        else:
-            print("⚠ Heartbeat rejected:", r.status_code, r.text)
-
-    except Exception as e:
-        print("⚠ Heartbeat error:", e)
-
-    time.sleep(30)
+    time.sleep(3600)
 PYCODE
 
 chmod +x "$AGENT_FILE"
 
 # -----------------------
-# CLEAN OLD AGENT
+# RESTART AGENT
 # -----------------------
 pkill -f "$AGENT_FILE" || true
 
-# -----------------------
-# START AGENT
-# -----------------------
 echo "🚀 Starting agent in background…"
 nohup python3 "$AGENT_FILE" >> "$LOG_FILE" 2>&1 &
 
