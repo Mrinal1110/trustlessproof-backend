@@ -18,7 +18,7 @@ from models import (
 )
 
 # --------------------------------
-# DB INIT
+# 🔥 DB INIT (PILOT SAFE RESET)
 # --------------------------------
 RESET_DB = os.getenv("RESET_DB") == "true"
 
@@ -58,15 +58,6 @@ class InviteTokenCreate(BaseModel):
     expiry_days: int = 7
 
 
-class ProofIn(BaseModel):
-    session_id: str
-    effort_hash: str
-    prev_hash: Optional[str] = None
-    effort_score: float
-    flags: List[str] = []
-    timestamp: str
-
-
 # --------------------------------
 # INTERNAL — CREATE INVITE TOKEN
 # --------------------------------
@@ -100,15 +91,18 @@ def create_invite_token(data: InviteTokenCreate):
 
 
 # --------------------------------
-# 🔐 AGENT — ACTIVATE (FIXED)
+# 🔐 AGENT — ACTIVATE (FINAL + SAFE)
 # --------------------------------
 @app.post("/agent/activate")
 async def activate_agent(request: Request):
     payload = await request.json()
-    token = payload.get("token")
 
-    if not token:
-        raise HTTPException(status_code=400, detail="Missing token")
+    token = payload.get("token")
+    org_id = payload.get("org_id")
+    user_id = payload.get("user_id")  # kept for validation only
+
+    if not token or not org_id or not user_id:
+        raise HTTPException(status_code=400, detail="Missing activation fields")
 
     db = SessionLocal()
 
@@ -126,10 +120,15 @@ async def activate_agent(request: Request):
         db.close()
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    # 🔒 HARD BIND: org + employee must match
+    if invite.org_id != org_id or invite.employee_id != user_id:
+        db.close()
+        raise HTTPException(status_code=403, detail="Token/org/user mismatch")
+
     session = AgentSession(
         id=str(uuid4()),
         org_id=invite.org_id,
-        user_id=invite.employee_id,
+        employee_id=invite.employee_id,
         issued_at=datetime.utcnow(),
         expires_at=datetime.utcnow() + timedelta(minutes=10),
         active=True,
@@ -138,13 +137,12 @@ async def activate_agent(request: Request):
     invite.used = True
     db.add(session)
     db.commit()
-    db.refresh(session)
 
     out = {
         "status": "activated",
         "session_id": session.id,
         "org_id": session.org_id,
-        "user_id": session.user_id,
+        "employee_id": session.employee_id,
         "expires_at": session.expires_at.isoformat(),
     }
 
@@ -175,6 +173,7 @@ def agent_heartbeat(session_id: str):
 
     session.last_heartbeat = datetime.utcnow()
     session.expires_at = datetime.utcnow() + timedelta(minutes=10)
+
     db.commit()
 
     out = {
@@ -185,6 +184,43 @@ def agent_heartbeat(session_id: str):
 
     db.close()
     return out
+
+
+# --------------------------------
+# AGENT — STATUS
+# --------------------------------
+@app.get("/agent/status/{org_id}")
+def agent_status(org_id: str):
+    db = SessionLocal()
+    now = datetime.utcnow()
+
+    sessions = db.query(AgentSession).filter(
+        AgentSession.org_id == org_id
+    ).all()
+
+    result = []
+
+    for s in sessions:
+        if not s.active:
+            state = "OFFLINE"
+        elif not s.last_heartbeat:
+            state = "INSTALLED"
+        elif now - s.last_heartbeat > timedelta(minutes=5):
+            state = "STALE"
+        else:
+            state = "ACTIVE"
+
+        result.append({
+            "employee_id": s.employee_id,
+            "state": state,
+            "last_heartbeat": (
+                s.last_heartbeat.isoformat()
+                if s.last_heartbeat else None
+            ),
+        })
+
+    db.close()
+    return result
 
 
 # --------------------------------
