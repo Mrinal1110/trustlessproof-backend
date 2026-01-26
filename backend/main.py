@@ -141,42 +141,53 @@ def create_invite_token(data: InviteTokenCreate):
 def activate_agent(payload: AgentActivateIn):
     db = SessionLocal()
 
-    invite = (
-        db.query(InviteToken)
-        .filter(
-            InviteToken.id == payload.token,
-            InviteToken.used == False,
-            InviteToken.expires_at > datetime.utcnow(),
+    try:
+        invite = (
+            db.query(InviteToken)
+            .filter(InviteToken.id == payload.token)
+            .first()
         )
-        .first()
-    )
 
-    if not invite:
+        if not invite:
+            raise HTTPException(status_code=403, detail="Invalid token")
+
+        if invite.used:
+            raise HTTPException(status_code=403, detail="Token already used")
+
+        if invite.expires_at and invite.expires_at < datetime.utcnow():
+            raise HTTPException(status_code=403, detail="Token expired")
+
+        session_id = str(uuid4())
+
+        session = AgentSession(
+            id=session_id,
+            org_id=invite.org_id,
+            employee_id=invite.employee_id,
+            active=True,
+            created_at=datetime.utcnow(),
+            last_heartbeat=None,
+            expires_at=datetime.utcnow() + timedelta(minutes=10),
+        )
+
+        db.add(session)
+        invite.used = True
+        db.commit()
+
+        return {
+            "session_id": session_id,
+            "org_id": invite.org_id,
+            "employee_id": invite.employee_id,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print("ACTIVATION ERROR:", str(e))
+        raise HTTPException(status_code=500, detail="Activation failed")
+
+    finally:
         db.close()
-        raise HTTPException(status_code=403, detail="Invalid or expired token")
-
-    session_id = str(uuid4())
-
-    session = AgentSession(
-        id=session_id,
-        org_id=invite.org_id,
-        employee_id=invite.employee_id,
-        active=True,
-        created_at=datetime.utcnow(),
-        last_heartbeat=None,
-        expires_at=datetime.utcnow() + timedelta(minutes=10),
-    )
-
-    db.add(session)
-    invite.used = True
-    db.commit()
-    db.close()
-
-    return {
-        "session_id": session_id,
-        "org_id": invite.org_id,
-        "employee_id": invite.employee_id,
-    }
 
 
 # --------------------------------
