@@ -158,6 +158,42 @@ def agent_heartbeat(session_id: str):
     finally:
         db.close()
 
+# --------------------------------
+# AGENT STATUS (ORG SCOPED)
+# --------------------------------
+@app.get("/agent/status/{org_id}")
+def agent_status(org_id: str):
+    db = SessionLocal()
+    now = datetime.utcnow()
+
+    try:
+        sessions = (
+            db.query(AgentSession)
+            .filter(AgentSession.org_id == org_id)
+            .all()
+        )
+
+        result = []
+
+        for s in sessions:
+            if not s.active:
+                state = "OFFLINE"
+            elif s.expires_at < now:
+                state = "EXPIRED"
+            else:
+                state = "ACTIVE"
+
+            result.append({
+                "employee_id": s.employee_id,
+                "state": state,
+                "expires_at": s.expires_at.isoformat(),
+            })
+
+        return result
+
+    finally:
+        db.close()
+
 
 # --------------------------------
 # HEALTH
