@@ -3,19 +3,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List
 from datetime import datetime, timedelta
 from uuid import uuid4
+from statistics import mean
 
 from database import SessionLocal, engine
-from models import (
-    Base,
-    Org,
-    InviteToken,
-    AgentSession,
-    Proof,
-    UserBaseline,
-)
+from models import Base, Org, InviteToken, AgentSession, Proof
 
 # --------------------------------
 # DB INIT
@@ -56,23 +50,8 @@ class AgentActivateIn(BaseModel):
     user_id: str
 
 
-class ProofIn(BaseModel):
-    user_id: str
-    effort_hash: str
-    prev_hash: Optional[str]
-    effort_score: float
-    flags: list = []
-    timestamp: str
-
-
-class ProofOut(BaseModel):
-    effort_hash: str
-    effort_score: float
-    confidence: float
-    timestamp: str
-
 # --------------------------------
-# CREATE INVITE TOKEN
+# INVITE TOKEN
 # --------------------------------
 @app.post("/internal/invite-token")
 def create_invite_token(data: InviteTokenCreate):
@@ -100,6 +79,7 @@ def create_invite_token(data: InviteTokenCreate):
         }
     finally:
         db.close()
+
 
 # --------------------------------
 # AGENT ACTIVATE
@@ -140,10 +120,13 @@ def activate_agent(data: AgentActivateIn):
         return {
             "status": "activated",
             "session_id": session.id,
+            "org_id": session.org_id,
+            "employee_id": session.employee_id,
             "expires_at": session.expires_at.isoformat(),
         }
     finally:
         db.close()
+
 
 # --------------------------------
 # AGENT HEARTBEAT
@@ -170,104 +153,66 @@ def agent_heartbeat(session_id: str):
 
         return {
             "status": "alive",
+            "session_id": session.id,
             "expires_at": session.expires_at.isoformat(),
         }
     finally:
         db.close()
 
+
 # --------------------------------
-# AGENT STATUS
+# AGENT STATUS (ORG SCOPED)
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
     db = SessionLocal()
     now = datetime.utcnow()
-    try:
-        sessions = db.query(AgentSession).filter(
-            AgentSession.org_id == org_id
-        ).all()
 
-        return [
-            {
+    try:
+        sessions = (
+            db.query(AgentSession)
+            .filter(AgentSession.org_id == org_id)
+            .all()
+        )
+
+        result = []
+
+        for s in sessions:
+            if not s.active:
+                state = "OFFLINE"
+            elif s.expires_at < now:
+                state = "EXPIRED"
+            else:
+                state = "ACTIVE"
+
+            result.append({
                 "employee_id": s.employee_id,
-                "state": "ACTIVE" if s.expires_at > now else "EXPIRED",
+                "state": state,
                 "expires_at": s.expires_at.isoformat(),
-            }
-            for s in sessions
-        ]
+            })
+
+        return result
     finally:
         db.close()
 
-# --------------------------------
-# 🧠 SUBMIT PROOF (Phase 15.1)
-# --------------------------------
-@app.post("/submit_proof")
-def submit_proof(data: ProofIn):
-    db = SessionLocal()
-    try:
-        # Load or init baseline
-        baseline = (
-            db.query(UserBaseline)
-            .filter(UserBaseline.user_id == data.user_id)
-            .first()
-        )
-
-        if not baseline:
-            baseline = UserBaseline(
-                user_id=data.user_id,
-                avg_effort=data.effort_score,
-                avg_confidence=data.effort_score,
-                samples=1,
-            )
-            confidence = data.effort_score
-            db.add(baseline)
-        else:
-            confidence = (
-                baseline.avg_confidence * baseline.samples + data.effort_score
-            ) / (baseline.samples + 1)
-
-            baseline.avg_confidence = confidence
-            baseline.avg_effort = (
-                baseline.avg_effort * baseline.samples + data.effort_score
-            ) / (baseline.samples + 1)
-            baseline.samples += 1
-
-        proof = Proof(
-            user_id=data.user_id,
-            effort_hash=data.effort_hash,
-            prev_hash=data.prev_hash,
-            effort_score=data.effort_score,
-            confidence=confidence,
-            flags=",".join(data.flags),
-            timestamp=data.timestamp,
-        )
-
-        db.add(proof)
-        db.commit()
-
-        return {
-            "status": "accepted",
-            "confidence": confidence,
-        }
-    finally:
-        db.close()
 
 # --------------------------------
-# 📤 GET PROOFS
+# PROOFS (READ)
 # --------------------------------
-@app.get("/proofs/{user_id}", response_model=List[ProofOut])
-def get_proofs(user_id: str):
+@app.get("/proofs/{employee_id}")
+def get_proofs(employee_id: str):
     db = SessionLocal()
     try:
         proofs = (
             db.query(Proof)
-            .filter(Proof.user_id == user_id)
-            .order_by(Proof.id.asc())
+            .filter(Proof.user_id == employee_id)
+            .order_by(Proof.id.desc())
+            .limit(50)
             .all()
         )
 
         if not proofs:
-            raise HTTPException(status_code=404, detail="No proofs found")
+            return {"detail": "No proofs found"}
 
         return [
             {
@@ -280,6 +225,65 @@ def get_proofs(user_id: str):
         ]
     finally:
         db.close()
+
+
+# --------------------------------
+# 🔥 PHASE 15.2 — DECISION ENGINE
+# --------------------------------
+@app.get("/decision/{employee_id}")
+def decision(employee_id: str):
+    db = SessionLocal()
+    try:
+        proofs = (
+            db.query(Proof)
+            .filter(Proof.user_id == employee_id)
+            .order_by(Proof.id.desc())
+            .limit(10)
+            .all()
+        )
+
+        if not proofs:
+            return {
+                "employee_id": employee_id,
+                "band": "low_trust",
+                "label": "Low Trust Detected",
+                "confidence": None,
+                "windows": 0,
+                "explanation": "No verified work signals yet"
+            }
+
+        confidences = [p.confidence for p in proofs if p.confidence is not None]
+        avg_conf = mean(confidences)
+        windows = len(confidences)
+
+        if avg_conf >= 0.75:
+            band = "verified"
+            label = "Verified Trust"
+            explanation = "Consistent strong effort across recent activity"
+        elif avg_conf >= 0.55:
+            band = "probable"
+            label = "Probable Trust"
+            explanation = "Reliable effort with minor variation"
+        elif avg_conf >= 0.35:
+            band = "uncertain"
+            label = "Trust Requires Review"
+            explanation = "Inconsistent effort detected"
+        else:
+            band = "low_trust"
+            label = "Low Trust Detected"
+            explanation = "Insufficient or weak effort signals"
+
+        return {
+            "employee_id": employee_id,
+            "band": band,
+            "label": label,
+            "confidence": round(avg_conf, 3),
+            "windows": windows,
+            "explanation": explanation
+        }
+    finally:
+        db.close()
+
 
 # --------------------------------
 # HEALTH
