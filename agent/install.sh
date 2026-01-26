@@ -14,12 +14,14 @@ STATE_DIR="$HOME/.trustlessproof"
 LOG_FILE="$STATE_DIR/agent.log"
 AGENT_FILE="$STATE_DIR/agent.py"
 
+mkdir -p "$STATE_DIR"
+
 echo "Org: $ORG_ID"
 echo "User: $USER_ID"
 echo "Contacting TrustlessProof backend…"
 
 # -----------------------
-# ACTIVATE (ONE TIME)
+# ACTIVATE (REQUIRED)
 # -----------------------
 RESP=$(curl -s -w "\n%{http_code}" \
   -X POST "$BACKEND_URL/agent/activate" \
@@ -42,7 +44,13 @@ fi
 
 SESSION_ID=$(echo "$BODY" | sed -n 's/.*"session_id":"\([^"]*\)".*/\1/p')
 
-mkdir -p "$STATE_DIR"
+if [ -z "$SESSION_ID" ]; then
+  echo "❌ session_id missing"
+  exit 1
+fi
+
+echo "✅ Agent activated successfully"
+echo "Session ID: $SESSION_ID"
 
 # -----------------------
 # WRITE STATE
@@ -64,69 +72,11 @@ EOF
 # -----------------------
 # INSTALL AGENT CODE
 # -----------------------
-cat > "$AGENT_FILE" <<'EOF'
-<<AGENT_PY_CONTENT>>
-EOF
-
-# Inject agent code safely
-sed -i '/<<AGENT_PY_CONTENT>>/{
-  r /dev/stdin
-  d
-}' "$AGENT_FILE" <<'PYCODE'
-import time
-import json
-import requests
-from datetime import datetime, timezone
-from pathlib import Path
-import sys
-
-STATE_DIR = Path.home() / ".trustlessproof"
-CONFIG_PATH = STATE_DIR / "agent.json"
-SESSION_PATH = STATE_DIR / "session.json"
-
-if not CONFIG_PATH.exists() or not SESSION_PATH.exists():
-    print("❌ Missing agent state. Exiting.")
-    sys.exit(1)
-
-with open(CONFIG_PATH) as f:
-    cfg = json.load(f)
-
-with open(SESSION_PATH) as f:
-    sess = json.load(f)
-
-ORG_ID = cfg["org_id"]
-EMPLOYEE_ID = cfg["employee_id"]
-API_BASE = cfg["api_base"]
-SESSION_ID = sess["session_id"]
-
-print("🟢 TrustlessProof Agent Running")
-print("Org      :", ORG_ID)
-print("Employee :", EMPLOYEE_ID)
-print("Session  :", SESSION_ID)
-
-while True:
-    try:
-        r = requests.post(
-            f"{API_BASE}/agent/heartbeat",
-            params={"session_id": SESSION_ID},
-            timeout=5
-        )
-
-        if r.status_code == 200:
-            print("💓 Heartbeat OK @", datetime.now(timezone.utc).isoformat())
-        else:
-            print("⚠ Heartbeat rejected:", r.status_code, r.text)
-
-    except Exception as e:
-        print("⚠ Heartbeat error:", e)
-
-    time.sleep(30)
-PYCODE
-
+cp "$(dirname "$0")/agent.py" "$AGENT_FILE"
 chmod +x "$AGENT_FILE"
 
 # -----------------------
-# KILL OLD AGENT
+# CLEAN OLD AGENT
 # -----------------------
 pkill -f "$AGENT_FILE" || true
 
