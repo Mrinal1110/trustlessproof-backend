@@ -138,51 +138,52 @@ def create_invite_token(data: InviteTokenCreate):
 # 🔐 AGENT — ACTIVATE (FINAL)
 # --------------------------------
 @app.post("/agent/activate")
-def activate_agent(payload: AgentActivateIn):
+def activate_agent(payload: ActivateAgentRequest):
     db = SessionLocal()
-
-    invite = (
-        db.query(InviteToken)
-        .filter(
-            InviteToken.id == payload.token,
-            InviteToken.used == False,
-            InviteToken.expires_at > datetime.utcnow(),
+    try:
+        invite = (
+            db.query(InviteToken)
+            .filter(InviteToken.token == payload.token)
+            .first()
         )
-        .first()
-    )
 
-    if not invite:
+        if not invite:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        if invite.used:
+            raise HTTPException(status_code=401, detail="Token already used")
+
+        if invite.expires_at < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Token expired")
+
+        # ✅ CRITICAL FIX: extract values NOW
+        org_id = invite.org_id
+        employee_id = invite.employee_id
+        invite_id = invite.id
+
+        # mark token as used
+        invite.used = True
+        db.commit()
+
+        # create agent session
+        session = AgentSession(
+            id=str(uuid.uuid4()),
+            org_id=org_id,
+            employee_id=employee_id,
+            invite_id=invite_id,
+            expires_at=datetime.utcnow() + timedelta(minutes=10),
+        )
+
+        db.add(session)
+        db.commit()
+
+        return {
+            "status": "activated",
+            "session_id": session.id,
+        }
+
+    finally:
         db.close()
-        raise HTTPException(status_code=403, detail="Invalid or expired token")
-
-    # ✅ CAPTURE VALUES BEFORE COMMIT
-    org_id = invite.org_id
-    employee_id = invite.employee_id
-
-    session_id = str(uuid4())
-
-    session = AgentSession(
-        id=session_id,
-        org_id=org_id,
-        employee_id=employee_id,
-        active=True,
-        created_at=datetime.utcnow(),
-        last_heartbeat=None,
-        expires_at=datetime.utcnow() + timedelta(minutes=10),
-    )
-
-    db.add(session)
-    invite.used = True
-
-    db.commit()
-    db.close()
-
-    # ✅ SAFE: returning primitives, not ORM objects
-    return {
-        "session_id": session_id,
-        "org_id": org_id,
-        "employee_id": employee_id,
-    }
 
 
 # --------------------------------
