@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useOutletContext } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { API_BASE } from "../../config/api";
 
 import ActionLog from "./ActionLog";
@@ -10,20 +10,21 @@ import PolicyPanel from "./PolicyPanel";
 import PilotControls from "./PilotControls";
 
 export default function Dashboard() {
-  const { employee } = useOutletContext();
+  const { employeeId } = useParams();
 
   const [decision, setDecision] = useState(null);
   const [proofs, setProofs] = useState([]);
   const [loading, setLoading] = useState(false);
 
+  /* ---------- Fetch employee data ---------- */
   useEffect(() => {
-    if (!employee) return;
+    if (!employeeId) return;
 
     setLoading(true);
 
     Promise.all([
-      fetch(`${API_BASE}/decision/${employee}`).then(r => r.json()),
-      fetch(`${API_BASE}/proofs/${employee}`).then(r => r.json())
+      fetch(`${API_BASE}/decision/${employeeId}`).then(r => r.json()),
+      fetch(`${API_BASE}/proofs/${employeeId}`).then(r => r.json())
     ])
       .then(([decisionData, proofsData]) => {
         setDecision({
@@ -38,25 +39,36 @@ export default function Dashboard() {
 
         setProofs(
           Array.isArray(proofsData)
-            ? proofsData.filter(p => p.user_id === employee)
+            ? proofsData.filter(p => p.user_id === employeeId)
             : []
         );
       })
       .finally(() => setLoading(false));
-  }, [employee]);
+  }, [employeeId]);
 
-  if (!employee) return <div className="card">Select an employee</div>;
-  if (loading) return <div className="card">Loading employee data…</div>;
+  /* ---------- Empty states ---------- */
+  if (!employeeId) {
+    return (
+      <div className="card">
+        <h3>No employee selected</h3>
+        <p>Select an employee from the sidebar to view trust details.</p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return <div className="card">Loading employee data…</div>;
+  }
 
   return (
     <div>
-      <h1>Employee Dashboard</h1>
-      <h2 style={{ color: "#9ca3af" }}>{employee}</h2>
+      <h1>Employee Trust Report</h1>
+      <h2 style={{ color: "#9ca3af" }}>{employeeId}</h2>
 
       <TrustVerdict decision={decision} />
       <PolicyPanel decision={decision} />
       <TrustSummary decision={decision} />
-      <ActionLog employee={employee} />
+      <ActionLog employee={employeeId} />
       <PilotControls />
       <ConfidenceChart proofs={proofs} />
     </div>

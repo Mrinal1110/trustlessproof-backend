@@ -9,93 +9,172 @@ export default function InviteEmployees() {
   const [employees, setEmployees] = useState([]);
   const [name, setName] = useState("");
   const [userId, setUserId] = useState("");
-  const [tokens, setTokens] = useState({});
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
 
+  /* ---------------- Load pilot context ---------------- */
   useEffect(() => {
-    const p = localStorage.getItem("pilot");
-    if (!p) {
+    try {
+      const pRaw = localStorage.getItem("pilot");
+      const eRaw = localStorage.getItem("pilot_employees");
+
+      if (!pRaw) {
+        navigate("/app/pilot/start");
+        return;
+      }
+
+      setPilot(JSON.parse(pRaw));
+      setEmployees(eRaw ? JSON.parse(eRaw) : []);
+    } catch {
       navigate("/app/pilot/start");
-      return;
     }
-    setPilot(JSON.parse(p));
   }, [navigate]);
 
-  async function addEmployee() {
-    if (!userId || !pilot?.company) return;
+  /* ---------------- Generate invite ---------------- */
+  async function generateInvite() {
+    if (!pilot || !userId) return;
+    if (employees.length >= pilot.size) return;
 
-    const res = await fetch(`${API_BASE}/internal/invite-token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        org_id: pilot.company,
-        employee_id: userId,
-        expiry_days: 7
-      })
-    });
+    setError(null);
+    setLoading(true);
 
-    const data = await res.json();
+    let token = null;
 
-    const updated = [...employees, { name, user_id: userId }];
+    // Try backend token (optional but preferred)
+    try {
+      const res = await fetch(`${API_BASE}/internal/invite-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          org_id: pilot.company,
+          employee_id: userId,
+          expiry_days: 7
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Invite API failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      token = data.token;
+    } catch (err) {
+      console.warn("Invite token generation failed:", err.message);
+      // Pilot must continue even if backend fails
+    }
+
+    const invite = {
+      name: name || userId,
+      user_id: userId,
+      token,
+      command: token
+        ? `trustlessproof-agent start --token=${token}`
+        : `trustlessproof-agent start --user_id=${userId}`,
+      created_at: new Date().toISOString()
+    };
+
+    const updated = [...employees, invite];
     setEmployees(updated);
-    setTokens(t => ({ ...t, [userId]: data.token }));
-
     localStorage.setItem("pilot_employees", JSON.stringify(updated));
 
     setName("");
     setUserId("");
+    setLoading(false);
   }
 
+  if (!pilot) return null;
+
+  const limitReached = employees.length >= pilot.size;
+
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 760 }}>
       <h2>Invite Employees</h2>
-      <p style={{ color: "#9ca3af" }}>
-        Pilot for <strong>{pilot?.company}</strong>
+
+      <p style={{ color: "#9ca3af", marginBottom: 12 }}>
+        Pilot for <strong>{pilot.company}</strong> —{" "}
+        {employees.length}/{pilot.size} employees invited
       </p>
 
       <div className="card">
+        {limitReached && (
+          <p style={{ color: "#facc15", fontSize: 13 }}>
+            Employee limit reached for this pilot.
+          </p>
+        )}
+
+        {error && (
+          <p style={{ color: "#f87171", fontSize: 13 }}>
+            {error}
+          </p>
+        )}
+
         <input
           placeholder="Employee name"
           value={name}
           onChange={e => setName(e.target.value)}
+          disabled={limitReached}
           style={{ marginBottom: 8 }}
         />
+
         <input
           placeholder="Employee ID (e.g. rahul)"
           value={userId}
           onChange={e => setUserId(e.target.value)}
+          disabled={limitReached}
         />
+
         <button
           className="primary"
           style={{ marginTop: 12 }}
-          onClick={addEmployee}
+          onClick={generateInvite}
+          disabled={limitReached || loading}
         >
-          Generate Invite
+          {loading ? "Generating…" : "Generate Invite"}
         </button>
       </div>
 
+      {/* ---------------- INVITES LIST ---------------- */}
       {employees.length > 0 && (
-        <div className="card">
-          <h3>Invites</h3>
+        <div className="card" style={{ marginTop: 24 }}>
+          <h3>Invited Employees</h3>
 
-          <ul style={{ listStyle: "none", padding: 0 }}>
-            {employees.map(e => (
-              <li key={e.user_id} style={{ marginBottom: 16 }}>
-                <div><strong>{e.name}</strong></div>
-                <div style={{ fontSize: 13, color: "#94a3b8" }}>
-                  Activation Token:
-                </div>
-                <code>{tokens[e.user_id]}</code>
-              </li>
-            ))}
-          </ul>
+          {employees.map(e => (
+            <div
+              key={e.user_id}
+              style={{
+                marginBottom: 16,
+                paddingBottom: 12,
+                borderBottom: "1px solid rgba(255,255,255,0.08)"
+              }}
+            >
+              <strong>{e.name}</strong>
+              <div style={{ fontSize: 13, color: "#94a3b8" }}>
+                ID: {e.user_id}
+              </div>
+
+              <code
+                style={{
+                  display: "block",
+                  marginTop: 6,
+                  fontSize: 12,
+                  background: "#020617",
+                  padding: 8,
+                  borderRadius: 6
+                }}
+              >
+                {e.command}
+              </code>
+            </div>
+          ))}
         </div>
       )}
 
       <button
         className="primary"
-        onClick={() => navigate("/app/pilot/status")}
+        style={{ marginTop: 24 }}
+        onClick={() => navigate("/app/agents")}
       >
-        Continue →
+        Continue to Agent Setup →
       </button>
     </div>
   );

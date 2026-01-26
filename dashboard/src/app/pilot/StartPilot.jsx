@@ -6,7 +6,12 @@ export default function StartPilot() {
   const [size, setSize] = useState(3);
   const navigate = useNavigate();
 
-  const startPilot = () => {
+  function startPilot() {
+    // 🔴 CRITICAL: reset previous org context
+    localStorage.removeItem("pilot_employees");
+    localStorage.removeItem("active_employee");
+
+    // create fresh pilot
     localStorage.setItem(
       "pilot",
       JSON.stringify({
@@ -16,20 +21,19 @@ export default function StartPilot() {
         start: new Date().toISOString()
       })
     );
+
     navigate("/app/pilot/invite");
-  };
+  }
 
   return (
     <div style={{ maxWidth: 520 }}>
       <h2>Start a Pilot</h2>
 
       <p style={{ marginBottom: 24 }}>
-        Set up a short pilot to evaluate real-work trust signals across your
-        team.
+        Set up a short pilot to evaluate real-work trust signals across your team.
       </p>
 
       <div className="card">
-        {/* Company name */}
         <div style={{ marginBottom: 16 }}>
           <label
             style={{
@@ -50,7 +54,6 @@ export default function StartPilot() {
           />
         </div>
 
-        {/* Team size */}
         <div style={{ marginBottom: 24 }}>
           <label
             style={{
@@ -72,7 +75,6 @@ export default function StartPilot() {
           />
         </div>
 
-        {/* CTA */}
         <button
           className="primary"
           disabled={!company}
