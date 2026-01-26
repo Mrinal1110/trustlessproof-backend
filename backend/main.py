@@ -3,18 +3,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 from database import SessionLocal, engine
-from models import (
-    Base,
-    Org,
-    InviteToken,
-    AgentSession,
-    Proof,
-)
+from models import Base, Org, InviteToken, AgentSession, Proof
 
 # --------------------------------
 # DB INIT (SAFE)
@@ -61,7 +55,6 @@ class AgentActivateIn(BaseModel):
 @app.post("/internal/invite-token")
 def create_invite_token(data: InviteTokenCreate):
     db = SessionLocal()
-
     try:
         org = db.query(Org).filter(Org.id == data.org_id).first()
         if not org:
@@ -83,18 +76,16 @@ def create_invite_token(data: InviteTokenCreate):
             "token": token.id,
             "expires_at": token.expires_at.isoformat(),
         }
-
     finally:
         db.close()
 
 
 # --------------------------------
-# 🔐 AGENT ACTIVATE (FINAL)
+# 🔐 AGENT ACTIVATE (FIXED)
 # --------------------------------
 @app.post("/agent/activate")
 def activate_agent(data: AgentActivateIn):
     db = SessionLocal()
-
     try:
         invite = (
             db.query(InviteToken)
@@ -109,7 +100,6 @@ def activate_agent(data: AgentActivateIn):
         if not invite:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-        # Hard bind org + employee
         if invite.org_id != data.org_id or invite.employee_id != data.user_id:
             raise HTTPException(status_code=403, detail="Token/org/user mismatch")
 
@@ -119,12 +109,10 @@ def activate_agent(data: AgentActivateIn):
             employee_id=invite.employee_id,
             active=True,
             created_at=datetime.utcnow(),
-            last_heartbeat=None,
             expires_at=datetime.utcnow() + timedelta(minutes=10),
         )
 
         invite.used = True
-
         db.add(session)
         db.commit()
 
@@ -135,7 +123,6 @@ def activate_agent(data: AgentActivateIn):
             "employee_id": session.employee_id,
             "expires_at": session.expires_at.isoformat(),
         }
-
     finally:
         db.close()
 
@@ -146,7 +133,6 @@ def activate_agent(data: AgentActivateIn):
 @app.post("/agent/heartbeat")
 def agent_heartbeat(session_id: str):
     db = SessionLocal()
-
     try:
         session = (
             db.query(AgentSession)
@@ -161,9 +147,7 @@ def agent_heartbeat(session_id: str):
         if not session:
             return Response(status_code=403)
 
-        session.last_heartbeat = datetime.utcnow()
         session.expires_at = datetime.utcnow() + timedelta(minutes=10)
-
         db.commit()
 
         return {
@@ -171,47 +155,6 @@ def agent_heartbeat(session_id: str):
             "session_id": session.id,
             "expires_at": session.expires_at.isoformat(),
         }
-
-    finally:
-        db.close()
-
-
-# --------------------------------
-# AGENT STATUS (ORG SCOPED)
-# --------------------------------
-@app.get("/agent/status/{org_id}")
-def agent_status(org_id: str):
-    db = SessionLocal()
-    now = datetime.utcnow()
-
-    try:
-        sessions = db.query(AgentSession).filter(
-            AgentSession.org_id == org_id
-        ).all()
-
-        result = []
-
-        for s in sessions:
-            if not s.active:
-                state = "OFFLINE"
-            elif not s.last_heartbeat:
-                state = "INSTALLED"
-            elif now - s.last_heartbeat > timedelta(minutes=5):
-                state = "STALE"
-            else:
-                state = "ACTIVE"
-
-            result.append({
-                "employee_id": s.employee_id,
-                "state": state,
-                "last_heartbeat": (
-                    s.last_heartbeat.isoformat()
-                    if s.last_heartbeat else None
-                ),
-            })
-
-        return result
-
     finally:
         db.close()
 
