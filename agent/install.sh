@@ -4,12 +4,8 @@ set -e
 echo "🔐 TrustlessProof Agent Installer"
 echo "--------------------------------"
 
-# --------
-# REQUIRED ENV VARS
-# --------
 if [ -z "$ORG_ID" ] || [ -z "$USER_ID" ] || [ -z "$TOKEN" ]; then
   echo "❌ Missing required environment variables."
-  echo "Required: ORG_ID, USER_ID, TOKEN"
   exit 1
 fi
 
@@ -21,9 +17,9 @@ echo "Org: $ORG_ID"
 echo "User: $USER_ID"
 echo "Contacting TrustlessProof backend…"
 
-# --------
-# ACTIVATE AGENT (server-side validation)
-# --------
+# -----------------------
+# ACTIVATE (ONE TIME)
+# -----------------------
 ACTIVATION_RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST "$BACKEND_URL/agent/activate" \
   -H "Content-Type: application/json" \
@@ -53,25 +49,29 @@ fi
 echo "✅ Agent activated successfully"
 echo "Session ID: $SESSION_ID"
 
-# --------
-# WRITE AGENT CONFIG
-# --------
+# -----------------------
+# WRITE STATE
+# -----------------------
 mkdir -p "$AGENT_DIR"
 
 cat > "$AGENT_DIR/agent.json" <<EOF
 {
   "org_id": "$ORG_ID",
   "employee_id": "$USER_ID",
-  "token": "$TOKEN",
   "api_base": "$BACKEND_URL"
 }
 EOF
 
-# --------
-# START AGENT (BACKGROUND)
-# --------
-echo "🚀 Starting agent in background…"
+cat > "$AGENT_DIR/session.json" <<EOF
+{
+  "session_id": "$SESSION_ID"
+}
+EOF
 
+# -----------------------
+# START AGENT
+# -----------------------
+echo "🚀 Starting agent in background…"
 nohup python3 "$(pwd)/agent.py" >> "$LOG_FILE" 2>&1 &
 
 echo "🟢 Agent running (logs: $LOG_FILE)"
