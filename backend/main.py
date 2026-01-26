@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -58,11 +58,6 @@ class InviteTokenCreate(BaseModel):
     expiry_days: int = 7
 
 
-class AgentActivateIn(BaseModel):
-    token: str
-    agent_fingerprint: Optional[str] = None
-
-
 class ProofIn(BaseModel):
     session_id: str
     effort_hash: str
@@ -108,78 +103,77 @@ def trust_band(conf: float) -> dict:
 @app.post("/internal/invite-token")
 def create_invite_token(data: InviteTokenCreate):
     db = SessionLocal()
+    try:
+        org = db.query(Org).filter(Org.id == data.org_id).first()
+        if not org:
+            org = Org(id=data.org_id, name=data.org_id, active=True)
+            db.add(org)
 
-    org = db.query(Org).filter(Org.id == data.org_id).first()
-    if not org:
-        org = Org(id=data.org_id, name=data.org_id, active=True)
-        db.add(org)
+        token = InviteToken(
+            id=f"tp_{uuid4().hex}",
+            org_id=data.org_id,
+            employee_id=data.employee_id,
+            expires_at=datetime.utcnow() + timedelta(days=data.expiry_days),
+            used=False,
+        )
 
-    token = InviteToken(
-        id=f"tp_{uuid4().hex}",
-        org_id=data.org_id,
-        employee_id=data.employee_id,
-        expires_at=datetime.utcnow() + timedelta(days=data.expiry_days),
-        used=False,
-    )
+        db.add(token)
+        db.commit()
 
-    db.add(token)
-    db.commit()
-
-    out = {
-        "token": token.id,
-        "expires_at": token.expires_at.isoformat(),
-    }
-
-    db.close()
-    return out
+        return {
+            "token": token.id,
+            "expires_at": token.expires_at.isoformat(),
+        }
+    finally:
+        db.close()
 
 
 # --------------------------------
-# 🔐 AGENT — ACTIVATE (FINAL)
+# 🔐 AGENT — ACTIVATE (FINAL, FIXED)
 # --------------------------------
 @app.post("/agent/activate")
-def activate_agent(payload: ActivateAgentRequest):
+async def activate_agent(request: Request):
+    payload = await request.json()
+
+    token = payload.get("token")
+    org_id = payload.get("org_id")
+    user_id = payload.get("user_id")  # used only for validation
+
+    if not token or not org_id or not user_id:
+        raise HTTPException(status_code=400, detail="Missing activation fields")
+
     db = SessionLocal()
     try:
         invite = (
             db.query(InviteToken)
-            .filter(InviteToken.token == payload.token)
+            .filter(
+                InviteToken.id == token,                 # ✅ correct column
+                InviteToken.used == False,
+                InviteToken.expires_at > datetime.utcnow(),
+            )
             .first()
         )
 
         if not invite:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-        if invite.used:
-            raise HTTPException(status_code=401, detail="Token already used")
-
-        if invite.expires_at < datetime.utcnow():
-            raise HTTPException(status_code=401, detail="Token expired")
-
-        # ✅ CRITICAL FIX: extract values NOW
-        org_id = invite.org_id
-        employee_id = invite.employee_id
-        invite_id = invite.id
-
-        # mark token as used
-        invite.used = True
-        db.commit()
-
-        # create agent session
         session = AgentSession(
-            id=str(uuid.uuid4()),
-            org_id=org_id,
-            employee_id=employee_id,
-            invite_id=invite_id,
+            id=str(uuid4()),
+            org_id=invite.org_id,
+            employee_id=invite.employee_id,             # ✅ correct field
+            issued_at=datetime.utcnow(),
             expires_at=datetime.utcnow() + timedelta(minutes=10),
         )
 
+        invite.used = True
         db.add(session)
         db.commit()
 
         return {
             "status": "activated",
             "session_id": session.id,
+            "org_id": invite.org_id,
+            "employee_id": invite.employee_id,
         }
 
     finally:
@@ -192,34 +186,32 @@ def activate_agent(payload: ActivateAgentRequest):
 @app.post("/agent/heartbeat")
 def agent_heartbeat(session_id: str):
     db = SessionLocal()
-
-    session = (
-        db.query(AgentSession)
-        .filter(
-            AgentSession.id == session_id,
-            AgentSession.active == True,
-            AgentSession.expires_at > datetime.utcnow(),
+    try:
+        session = (
+            db.query(AgentSession)
+            .filter(
+                AgentSession.id == session_id,
+                AgentSession.active == True,
+                AgentSession.expires_at > datetime.utcnow(),
+            )
+            .first()
         )
-        .first()
-    )
 
-    if not session:
+        if not session:
+            return Response(status_code=403)
+
+        session.last_heartbeat = datetime.utcnow()
+        session.expires_at = datetime.utcnow() + timedelta(minutes=10)
+
+        db.commit()
+
+        return {
+            "status": "alive",
+            "session_id": session.id,
+            "expires_at": session.expires_at.isoformat(),
+        }
+    finally:
         db.close()
-        return Response(status_code=403)
-
-    session.last_heartbeat = datetime.utcnow()
-    session.expires_at = datetime.utcnow() + timedelta(minutes=10)
-
-    db.commit()
-
-    out = {
-        "status": "alive",
-        "session_id": session.id,
-        "expires_at": session.expires_at.isoformat(),
-    }
-
-    db.close()
-    return out
 
 
 # --------------------------------
@@ -228,35 +220,35 @@ def agent_heartbeat(session_id: str):
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
     db = SessionLocal()
-    now = datetime.utcnow()
+    try:
+        now = datetime.utcnow()
+        sessions = db.query(AgentSession).filter(
+            AgentSession.org_id == org_id
+        ).all()
 
-    sessions = db.query(AgentSession).filter(
-        AgentSession.org_id == org_id
-    ).all()
+        result = []
+        for s in sessions:
+            if not s.active:
+                state = "OFFLINE"
+            elif not s.last_heartbeat:
+                state = "INSTALLED"
+            elif now - s.last_heartbeat > timedelta(minutes=5):
+                state = "STALE"
+            else:
+                state = "ACTIVE"
 
-    result = []
+            result.append({
+                "employee_id": s.employee_id,
+                "state": state,
+                "last_heartbeat": (
+                    s.last_heartbeat.isoformat()
+                    if s.last_heartbeat else None
+                ),
+            })
 
-    for s in sessions:
-        if not s.active:
-            state = "OFFLINE"
-        elif not s.last_heartbeat:
-            state = "INSTALLED"
-        elif now - s.last_heartbeat > timedelta(minutes=5):
-            state = "STALE"
-        else:
-            state = "ACTIVE"
-
-        result.append({
-            "employee_id": s.employee_id,
-            "state": state,
-            "last_heartbeat": (
-                s.last_heartbeat.isoformat()
-                if s.last_heartbeat else None
-            ),
-        })
-
-    db.close()
-    return result
+        return result
+    finally:
+        db.close()
 
 
 # --------------------------------
@@ -265,31 +257,31 @@ def agent_status(org_id: str):
 @app.get("/decision/{user_id}")
 def decision(user_id: str):
     db = SessionLocal()
+    try:
+        proofs = (
+            db.query(Proof)
+            .filter(Proof.user_id == user_id)
+            .order_by(Proof.id.desc())
+            .limit(50)
+            .all()
+        )
 
-    proofs = (
-        db.query(Proof)
-        .filter(Proof.user_id == user_id)
-        .order_by(Proof.id.desc())
-        .limit(50)
-        .all()
-    )
+        if not proofs:
+            return {
+                "session_confidence": 0.0,
+                "windows": 0,
+                "decision": trust_band(0.0),
+            }
 
-    if not proofs:
-        db.close()
+        avg = sum(p.confidence for p in proofs) / len(proofs)
+
         return {
-            "session_confidence": 0.0,
-            "windows": 0,
-            "decision": trust_band(0.0),
+            "session_confidence": round(avg, 3),
+            "windows": len(proofs),
+            "decision": trust_band(avg),
         }
-
-    avg = sum(p.confidence for p in proofs) / len(proofs)
-    db.close()
-
-    return {
-        "session_confidence": round(avg, 3),
-        "windows": len(proofs),
-        "decision": trust_band(avg),
-    }
+    finally:
+        db.close()
 
 
 # --------------------------------
@@ -298,16 +290,15 @@ def decision(user_id: str):
 @app.get("/proofs/{user_id}")
 def get_user_proofs(user_id: str):
     db = SessionLocal()
-
-    proofs = (
-        db.query(Proof)
-        .filter(Proof.user_id == user_id)
-        .order_by(Proof.id.asc())
-        .all()
-    )
-
-    db.close()
-    return proofs
+    try:
+        return (
+            db.query(Proof)
+            .filter(Proof.user_id == user_id)
+            .order_by(Proof.id.asc())
+            .all()
+        )
+    finally:
+        db.close()
 
 
 # --------------------------------
