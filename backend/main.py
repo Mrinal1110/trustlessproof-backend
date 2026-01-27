@@ -18,7 +18,7 @@ from models import (
     ActionLog,
 )
 
-from actions import resolve_action
+from backend.actions import resolve_action
 
 # --------------------------------
 # DB INIT
