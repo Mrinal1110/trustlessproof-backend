@@ -140,19 +140,32 @@ def agent_status(org_id: str):
             .filter(AgentSession.org_id == org_id)
             .all()
         )
+        
+        result = []
+        for s in sessions:
+            expires = s.expires_at
+            if expires and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
 
-        return [
-            {
+            state = (
+                "ACTIVE"
+                if expires and expires > now
+                else "OFFLINE"
+            )
+
+            result.append({
                 "employee_id": s.employee_id,
-                "state": "ACTIVE"
-                if s.expires_at and s.expires_at > now
-                else "OFFLINE",
-                "expires_at": s.expires_at.isoformat()
-                if s.expires_at
-                else None,
-            }
-            for s in sessions
-        ]
+                "state": state,
+                "expires_at": expires.isoformat() if expires else None,
+            })
+
+        return result
+
+    except Exception as e:
+        # 🔥 NEVER crash the API
+        print("AGENT STATUS ERROR:", e)
+        return []
+        
     finally:
         db.close()
 
