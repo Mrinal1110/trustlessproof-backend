@@ -277,6 +277,13 @@ def agent_status(org_id: str):
         result = []
 
         for s in sessions:
+            expires = s.expires_at
+
+            # Normalize naive datetimes to UTC
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+
+
             if not s.active:
                 state = "OFFLINE"
             elif s.expires_at < now:
