@@ -58,7 +58,7 @@ def save_prev_hash(h):
 def heartbeat_loop():
     while True:
         try:
-            r = requests.post(
+            requests.post(
                 f"{API_BASE}/agent/heartbeat",
                 params={"session_id": SESSION_ID},
                 timeout=5
@@ -74,10 +74,13 @@ def proof_loop():
     prev_hash = load_prev_hash()
 
     while True:
-        # synthetic effort (Phase 15.1)
+        # Synthetic effort (Phase 17 placeholder)
         effort = round(random.uniform(0.4, 0.95), 3)
 
-        payload_str = f"{EMPLOYEE_ID}|{effort}|{prev_hash}|{datetime.utcnow()}"
+        # Use timezone-aware timestamp (no deprecation)
+        now = datetime.now(timezone.utc)
+
+        payload_str = f"{EMPLOYEE_ID}|{effort}|{prev_hash}|{now}"
         effort_hash = hashlib.sha256(payload_str.encode()).hexdigest()
 
         payload = {
@@ -86,7 +89,7 @@ def proof_loop():
             "prev_hash": prev_hash,
             "effort_score": effort,
             "flags": [],
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": now.isoformat()
         }
 
         try:
