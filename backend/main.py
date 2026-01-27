@@ -1,4 +1,3 @@
-import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
@@ -18,15 +17,24 @@ from models import (
 from actions import resolve_action
 
 # --------------------------------
-# INIT
+# INIT DB
 # --------------------------------
 Base.metadata.create_all(bind=engine)
 
+# --------------------------------
+# APP
+# --------------------------------
 app = FastAPI()
 
+# ✅ CORS — THIS IS CRITICAL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://trustlessproof.com",
+        "https://dashboard.trustlessproof.com",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -70,7 +78,7 @@ def activate_agent(data: dict):
         )
 
         if not invite:
-            raise HTTPException(401, "Invalid token")
+            raise HTTPException(401, "Invalid or expired token")
 
         session = AgentSession(
             id=str(uuid4()),
@@ -113,12 +121,13 @@ def heartbeat(session_id: str):
 
         s.expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
         db.commit()
+
         return {"status": "alive"}
     finally:
         db.close()
 
 # --------------------------------
-# ✅ AGENT STATUS — THIS WAS MISSING
+# ✅ AGENT STATUS (SAFE, NO 500)
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
@@ -132,22 +141,18 @@ def agent_status(org_id: str):
             .all()
         )
 
-        result = []
-        for s in sessions:
-            if s.expires_at < now:
-                state = "OFFLINE"
-            else:
-                state = "ACTIVE"
-
-            result.append(
-                {
-                    "employee_id": s.employee_id,
-                    "state": state,
-                    "expires_at": s.expires_at.isoformat(),
-                }
-            )
-
-        return result
+        return [
+            {
+                "employee_id": s.employee_id,
+                "state": "ACTIVE"
+                if s.expires_at and s.expires_at > now
+                else "OFFLINE",
+                "expires_at": s.expires_at.isoformat()
+                if s.expires_at
+                else None,
+            }
+            for s in sessions
+        ]
     finally:
         db.close()
 
