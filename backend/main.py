@@ -18,12 +18,11 @@ from models import (
 )
 
 # --------------------------------
-# DB INIT (SAFE)
+# DB INIT
 # --------------------------------
 RESET_DB = os.getenv("RESET_DB") == "true"
 
 if RESET_DB:
-    print("⚠️ RESET_DB enabled — dropping all tables")
     Base.metadata.drop_all(bind=engine)
 
 Base.metadata.create_all(bind=engine)
@@ -66,7 +65,7 @@ class ProofIn(BaseModel):
 
 
 # --------------------------------
-# CREATE INVITE TOKEN
+# INVITE TOKEN
 # --------------------------------
 @app.post("/internal/invite-token")
 def create_invite_token(data: InviteTokenCreate):
@@ -173,63 +172,95 @@ def agent_heartbeat(session_id: str):
 
 
 # --------------------------------
-# SUBMIT PROOF  ✅ PHASE 15.2.1
+# SUBMIT PROOF
 # --------------------------------
 @app.post("/submit_proof")
 def submit_proof(data: ProofIn):
     db = SessionLocal()
     try:
-        # Save proof
         proof = Proof(
             user_id=data.user_id,
             effort_hash=data.effort_hash,
             prev_hash=data.prev_hash,
             effort_score=data.effort_score,
-            confidence=data.effort_score,  # baseline = raw effort for now
+            confidence=data.effort_score,
             flags=",".join(data.flags),
             timestamp=data.timestamp,
         )
-
         db.add(proof)
-
-        # Update rolling baseline
-        baseline = (
-            db.query(UserBaseline)
-            .filter(UserBaseline.user_id == data.user_id)
-            .first()
-        )
-
-        if not baseline:
-            baseline = UserBaseline(
-                user_id=data.user_id,
-                avg_effort=data.effort_score,
-                avg_confidence=data.effort_score,
-                samples=1,
-            )
-            db.add(baseline)
-        else:
-            n = baseline.samples + 1
-            baseline.avg_effort = (
-                baseline.avg_effort * baseline.samples + data.effort_score
-            ) / n
-            baseline.avg_confidence = baseline.avg_effort
-            baseline.samples = n
-
         db.commit()
-
-        return {
-            "status": "accepted",
-            "user_id": data.user_id,
-            "effort": data.effort_score,
-            "confidence": baseline.avg_confidence,
-        }
-
+        return {"status": "accepted"}
     finally:
         db.close()
 
 
 # --------------------------------
-# GET PROOFS (DEBUG / UI)
+# DECISION ENGINE — PHASE 15.3
+# --------------------------------
+@app.get("/decision/{user_id}")
+def decision(user_id: str):
+    db = SessionLocal()
+    now = datetime.now(timezone.utc)
+
+    windows = {
+        "short": (15, 3),
+        "medium": (60, 6),
+        "long": (1440, 12),
+    }
+
+    result = {
+        "employee_id": user_id,
+        "band": "insufficient_data",
+        "confidence": None,
+        "windows": {},
+    }
+
+    try:
+        for name, (minutes, min_samples) in windows.items():
+            since = now - timedelta(minutes=minutes)
+
+            proofs = (
+                db.query(Proof)
+                .filter(Proof.user_id == user_id)
+                .filter(Proof.timestamp >= since.isoformat())
+                .all()
+            )
+
+            count = len(proofs)
+            avg = (
+                sum(p.effort_score for p in proofs) / count
+                if count > 0 else None
+            )
+
+            result["windows"][name] = {
+                "samples": count,
+                "average": avg,
+            }
+
+            if count >= min_samples and result["confidence"] is None:
+                result["confidence"] = avg
+
+        c = result["confidence"]
+
+        if c is None:
+            band = "insufficient_data"
+        elif c >= 0.75:
+            band = "high_trust"
+        elif c >= 0.45:
+            band = "normal"
+        else:
+            band = "low_trust"
+
+        result["band"] = band
+        result["label"] = band.replace("_", " ").title()
+
+        return result
+    finally:
+        db.close()
+
+
+# --------------------------------
+# PROOFS
 # --------------------------------
 @app.get("/proofs/{user_id}")
 def get_proofs(user_id: str):
@@ -243,12 +274,8 @@ def get_proofs(user_id: str):
             .all()
         )
 
-        if not proofs:
-            return []
-
         return [
             {
-                "effort_hash": p.effort_hash,
                 "effort_score": p.effort_score,
                 "confidence": p.confidence,
                 "timestamp": p.timestamp,
@@ -260,7 +287,7 @@ def get_proofs(user_id: str):
 
 
 # --------------------------------
-# AGENT STATUS (ORG SCOPED)
+# AGENT STATUS
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
@@ -268,21 +295,16 @@ def agent_status(org_id: str):
     now = datetime.now(timezone.utc)
 
     try:
-        sessions = (
-            db.query(AgentSession)
-            .filter(AgentSession.org_id == org_id)
-            .all()
-        )
+        sessions = db.query(AgentSession).filter(
+            AgentSession.org_id == org_id
+        ).all()
 
         result = []
 
         for s in sessions:
             expires = s.expires_at
-
-            # Normalize naive datetimes to UTC
             if expires.tzinfo is None:
                 expires = expires.replace(tzinfo=timezone.utc)
-
 
             if not s.active:
                 state = "OFFLINE"
@@ -294,7 +316,7 @@ def agent_status(org_id: str):
             result.append({
                 "employee_id": s.employee_id,
                 "state": state,
-                "expires_at": s.expires_at.isoformat(),
+                "expires_at": expires.isoformat(),
             })
 
         return result
