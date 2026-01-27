@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -15,7 +15,10 @@ from models import (
     AgentSession,
     Proof,
     UserBaseline,
+    ActionLog,
 )
+
+from actions import resolve_action
 
 # --------------------------------
 # DB INIT
@@ -66,7 +69,7 @@ class ProofIn(BaseModel):
 
 
 # --------------------------------
-# CREATE INVITE TOKEN
+# INVITE TOKEN
 # --------------------------------
 @app.post("/internal/invite-token")
 def create_invite_token(data: InviteTokenCreate):
@@ -173,7 +176,7 @@ def agent_heartbeat(session_id: str):
 
 
 # --------------------------------
-# SUBMIT PROOF (15.2.1)
+# SUBMIT PROOF
 # --------------------------------
 @app.post("/submit_proof")
 def submit_proof(data: ProofIn):
@@ -224,7 +227,7 @@ def submit_proof(data: ProofIn):
 
 
 # --------------------------------
-# TRUST WINDOWS (15.3)
+# TRUST DECISION (15.3)
 # --------------------------------
 def compute_window(db, user_id: str, since: datetime):
     proofs = (
@@ -285,39 +288,48 @@ def decision_engine(user_id: str):
 
 
 # --------------------------------
-# AGENT STATUS
+# 🔥 ACTION RESOLUTION (PHASE 16.1)
 # --------------------------------
-@app.get("/agent/status/{org_id}")
-def agent_status(org_id: str):
+@app.get("/action/{user_id}")
+def resolve_user_action(user_id: str):
     db = SessionLocal()
     now = datetime.now(timezone.utc)
 
     try:
-        sessions = db.query(AgentSession).filter(
-            AgentSession.org_id == org_id
-        ).all()
+        decision = decision_engine(user_id)
+        action_data = resolve_action(
+            decision["band"],
+            decision["confidence"],
+        )
 
-        result = []
+        # idempotent log: only log if band changed
+        last = (
+            db.query(ActionLog)
+            .filter(ActionLog.user_id == user_id)
+            .order_by(ActionLog.timestamp.desc())
+            .first()
+        )
 
-        for s in sessions:
-            expires = s.expires_at
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
+        if not last or last.band != decision["band"]:
+            log = ActionLog(
+                user_id=user_id,
+                band=decision["band"],
+                policy=action_data["policy"],
+                message=action_data["message"],
+                timestamp=now,
+            )
+            db.add(log)
+            db.commit()
 
-            if not s.active:
-                state = "OFFLINE"
-            elif expires < now:
-                state = "EXPIRED"
-            else:
-                state = "ACTIVE"
+        return {
+            "employee_id": user_id,
+            "band": decision["band"],
+            "action": action_data["action"],
+            "policy": action_data["policy"],
+            "message": action_data["message"],
+            "evaluated_at": now.isoformat(),
+        }
 
-            result.append({
-                "employee_id": s.employee_id,
-                "state": state,
-                "expires_at": s.expires_at.isoformat(),
-            })
-
-        return result
     finally:
         db.close()
 
