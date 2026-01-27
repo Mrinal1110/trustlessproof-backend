@@ -20,15 +20,8 @@ def resolve_action(band: str, confidence: float | None):
             "message": "Low trust — access restricted",
         }
 
-    if band == "insufficient_data":
-        return {
-            "action": "REQUIRE_REVIEW",
-            "policy": "manual_review",
-            "message": "Insufficient data — manual review required",
-        }
-
     return {
         "action": "REQUIRE_REVIEW",
-        "policy": "unknown",
-        "message": "Unknown trust state — review required",
+        "policy": "manual_review",
+        "message": "Insufficient data — manual review required",
     }
