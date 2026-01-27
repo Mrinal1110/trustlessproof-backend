@@ -286,7 +286,7 @@ def agent_status(org_id: str):
 
             if not s.active:
                 state = "OFFLINE"
-            elif s.expires_at < now:
+            elif expires < now:
                 state = "EXPIRED"
             else:
                 state = "ACTIVE"
