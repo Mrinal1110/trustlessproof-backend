@@ -5,20 +5,20 @@ from datetime import datetime
 # -------------------------
 # Proofs
 # -------------------------
+from sqlalchemy import Column, String, Float, DateTime
+from datetime import datetime, timezone
+
 class Proof(Base):
     __tablename__ = "proofs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True)
-
-    effort_hash = Column(String, index=True)
-    prev_hash = Column(String, nullable=True)
-
-    effort_score = Column(Float)
-    confidence = Column(Float)
-
-    flags = Column(String, default="")
-    timestamp = Column(String)
+    id = Column(String, primary_key=True)
+    user_id = Column(String, index=True, nullable=False)
+    effort_score = Column(Float, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
 
 
 # -------------------------
