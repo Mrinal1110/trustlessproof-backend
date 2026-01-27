@@ -127,6 +127,45 @@ def heartbeat(session_id: str):
         db.close()
 
 # --------------------------------
+# PROOF INGESTION (PHASE 17)
+# --------------------------------
+@app.post("/agent/proof")
+def ingest_proof(data: dict):
+    db = SessionLocal()
+    try:
+        session = (
+            db.query(AgentSession)
+            .filter(
+                AgentSession.id == data.get("session_id"),
+                AgentSession.active == True,
+            )
+            .first()
+        )
+
+        if not session:
+            raise HTTPException(403, "Invalid session")
+
+        proof = Proof(
+            id=str(uuid4()),
+            user_id=session.employee_id,
+            effort_score=float(data.get("effort", 0)),
+            created_at=datetime.now(timezone.utc),
+        )
+
+        db.add(proof)
+        db.commit()
+
+        return {"status": "recorded"}
+
+    except Exception as e:
+        print("PROOF ERROR:", e)
+        return {"status": "ignored"}
+
+    finally:
+        db.close()
+
+
+# --------------------------------
 # ✅ AGENT STATUS (SAFE, NO 500)
 # --------------------------------
 @app.get("/agent/status/{org_id}")
@@ -206,6 +245,36 @@ def decision(user_id: str):
         }
     finally:
         db.close()
+
+# --------------------------------
+# PROOFS READ (FRONTEND)
+# --------------------------------
+@app.get("/proofs/{user_id}")
+def get_proofs(user_id: str):
+    db = SessionLocal()
+    try:
+        proofs = (
+            db.query(Proof)
+            .filter(Proof.user_id == user_id)
+            .order_by(Proof.created_at.asc())
+            .all()
+        )
+
+        return [
+            {
+                "confidence": p.effort_score,
+                "timestamp": p.created_at.isoformat(),
+            }
+            for p in proofs
+        ]
+
+    except Exception as e:
+        print("PROOFS READ ERROR:", e)
+        return []
+
+    finally:
+        db.close()
+
 
 # --------------------------------
 # ACTION (PHASE 16)
