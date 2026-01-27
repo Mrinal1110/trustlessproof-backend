@@ -127,7 +127,7 @@ def heartbeat(session_id: str):
         db.close()
 
 # --------------------------------
-# PROOF INGESTION (PHASE 17)
+# PROOF INGESTION (PHASE 17 — FIXED)
 # --------------------------------
 @app.post("/agent/proof")
 def ingest_proof(data: dict):
@@ -146,13 +146,10 @@ def ingest_proof(data: dict):
             raise HTTPException(403, "Invalid session")
 
         proof = Proof(
+            id=str(uuid4()),
             user_id=session.employee_id,
-            effort_hash=str(uuid4()),
-            prev_hash=None,
             effort_score=float(data.get("effort", 0)),
-            confidence=float(data.get("effort", 0)),
-            flags="",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(timezone.utc),
         )
 
         db.add(proof)
