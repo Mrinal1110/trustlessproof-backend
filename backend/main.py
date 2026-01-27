@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -23,6 +23,7 @@ from models import (
 RESET_DB = os.getenv("RESET_DB") == "true"
 
 if RESET_DB:
+    print("⚠️ RESET_DB enabled — dropping all tables")
     Base.metadata.drop_all(bind=engine)
 
 Base.metadata.create_all(bind=engine)
@@ -65,7 +66,7 @@ class ProofIn(BaseModel):
 
 
 # --------------------------------
-# INVITE TOKEN
+# CREATE INVITE TOKEN
 # --------------------------------
 @app.post("/internal/invite-token")
 def create_invite_token(data: InviteTokenCreate):
@@ -172,7 +173,7 @@ def agent_heartbeat(session_id: str):
 
 
 # --------------------------------
-# SUBMIT PROOF
+# SUBMIT PROOF (15.2.1)
 # --------------------------------
 @app.post("/submit_proof")
 def submit_proof(data: ProofIn):
@@ -187,101 +188,98 @@ def submit_proof(data: ProofIn):
             flags=",".join(data.flags),
             timestamp=data.timestamp,
         )
+
         db.add(proof)
+
+        baseline = (
+            db.query(UserBaseline)
+            .filter(UserBaseline.user_id == data.user_id)
+            .first()
+        )
+
+        if not baseline:
+            baseline = UserBaseline(
+                user_id=data.user_id,
+                avg_effort=data.effort_score,
+                avg_confidence=data.effort_score,
+                samples=1,
+            )
+            db.add(baseline)
+        else:
+            n = baseline.samples + 1
+            baseline.avg_effort = (
+                baseline.avg_effort * baseline.samples + data.effort_score
+            ) / n
+            baseline.avg_confidence = baseline.avg_effort
+            baseline.samples = n
+
         db.commit()
-        return {"status": "accepted"}
+
+        return {
+            "status": "accepted",
+            "confidence": baseline.avg_confidence,
+        }
     finally:
         db.close()
 
 
 # --------------------------------
-# DECISION ENGINE — PHASE 15.3
+# TRUST WINDOWS (15.3)
 # --------------------------------
+def compute_window(db, user_id: str, since: datetime):
+    proofs = (
+        db.query(Proof)
+        .filter(
+            Proof.user_id == user_id,
+            Proof.timestamp >= since.isoformat(),
+        )
+        .all()
+    )
+
+    if not proofs:
+        return {"samples": 0, "average": None}
+
+    avg = sum(p.effort_score for p in proofs) / len(proofs)
+    return {"samples": len(proofs), "average": round(avg, 3)}
+
+
 @app.get("/decision/{user_id}")
-def decision(user_id: str):
+def decision_engine(user_id: str):
     db = SessionLocal()
     now = datetime.now(timezone.utc)
 
-    windows = {
-        "short": (15, 3),
-        "medium": (60, 6),
-        "long": (1440, 12),
-    }
-
-    result = {
-        "employee_id": user_id,
-        "band": "insufficient_data",
-        "confidence": None,
-        "windows": {},
-    }
-
     try:
-        for name, (minutes, min_samples) in windows.items():
-            since = now - timedelta(minutes=minutes)
+        windows = {
+            "short": compute_window(db, user_id, now - timedelta(minutes=15)),
+            "medium": compute_window(db, user_id, now - timedelta(hours=2)),
+            "long": compute_window(db, user_id, now - timedelta(days=7)),
+        }
 
-            proofs = (
-                db.query(Proof)
-                .filter(Proof.user_id == user_id)
-                .filter(Proof.timestamp >= since.isoformat())
-                .all()
-            )
+        total_samples = sum(w["samples"] for w in windows.values())
 
-            count = len(proofs)
-            avg = (
-                sum(p.effort_score for p in proofs) / count
-                if count > 0 else None
-            )
-
-            result["windows"][name] = {
-                "samples": count,
-                "average": avg,
-            }
-
-            if count >= min_samples and result["confidence"] is None:
-                result["confidence"] = avg
-
-        c = result["confidence"]
-
-        if c is None:
+        if total_samples < 3:
             band = "insufficient_data"
-        elif c >= 0.75:
-            band = "high_trust"
-        elif c >= 0.45:
-            band = "normal"
+            label = "Insufficient Data"
         else:
-            band = "low_trust"
+            avg = windows["medium"]["average"] or 0
+            if avg < 0.4:
+                band = "low_trust"
+                label = "Low Trust Detected"
+            elif avg < 0.7:
+                band = "normal"
+                label = "Normal"
+            else:
+                band = "high_trust"
+                label = "High Trust"
 
-        result["band"] = band
-        result["label"] = band.replace("_", " ").title()
+        return {
+            "employee_id": user_id,
+            "band": band,
+            "label": label,
+            "confidence": windows["medium"]["average"],
+            "windows": windows,
+        }
 
-        return result
-    finally:
-        db.close()
-
-
-# --------------------------------
-# PROOFS
-# --------------------------------
-@app.get("/proofs/{user_id}")
-def get_proofs(user_id: str):
-    db = SessionLocal()
-    try:
-        proofs = (
-            db.query(Proof)
-            .filter(Proof.user_id == user_id)
-            .order_by(Proof.id.desc())
-            .limit(50)
-            .all()
-        )
-
-        return [
-            {
-                "effort_score": p.effort_score,
-                "confidence": p.confidence,
-                "timestamp": p.timestamp,
-            }
-            for p in proofs
-        ]
     finally:
         db.close()
 
@@ -316,7 +314,7 @@ def agent_status(org_id: str):
             result.append({
                 "employee_id": s.employee_id,
                 "state": state,
-                "expires_at": expires.isoformat(),
+                "expires_at": s.expires_at.isoformat(),
             })
 
         return result
