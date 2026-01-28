@@ -10,6 +10,8 @@ if [ -z "$ORG_ID" ] || [ -z "$USER_ID" ] || [ -z "$TOKEN" ]; then
 fi
 
 BACKEND_URL="https://trustlessproof-backend-production.up.railway.app"
+AGENT_BASE_URL="https://trustlessproof-agent.vercel.app"
+
 STATE_DIR="$HOME/.trustlessproof"
 LOG_FILE="$STATE_DIR/agent.log"
 AGENT_FILE="$STATE_DIR/agent.py"
@@ -65,18 +67,12 @@ cat > "$STATE_DIR/session.json" <<EOF
 EOF
 
 # -----------------------
-# INSTALL AGENT CODE
-# SOURCE OF TRUTH: agent/agent.py
+# DOWNLOAD AGENT CODE (CANONICAL)
 # -----------------------
+echo "⬇️ Downloading agent code…"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+curl -fsSL "$AGENT_BASE_URL/agent.py" -o "$AGENT_FILE"
 
-if [ ! -f "$SCRIPT_DIR/agent.py" ]; then
-  echo "❌ agent.py not found next to install.sh"
-  exit 1
-fi
-
-cp "$SCRIPT_DIR/agent.py" "$AGENT_FILE"
 chmod +x "$AGENT_FILE"
 
 echo "✅ Agent code installed"
