@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import math
 
 from database import SessionLocal, engine
 from models import (
@@ -13,6 +14,7 @@ from models import (
     UserBaseline,
     ActionLog,
 )
+
 from actions import resolve_action
 
 # --------------------------------
@@ -85,7 +87,6 @@ def activate_agent(data: dict):
             active=True,
             created_at=datetime.now(timezone.utc),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-            # version/platform filled on first proof
         )
 
         invite.used = True
@@ -126,7 +127,7 @@ def heartbeat(session_id: str):
         db.close()
 
 # --------------------------------
-# PROOF INGESTION (stores version/platform)
+# PROOF INGESTION
 # --------------------------------
 @app.post("/agent/proof")
 def ingest_proof(data: dict):
@@ -144,12 +145,6 @@ def ingest_proof(data: dict):
         if not session:
             raise HTTPException(403, "Invalid session")
 
-        # 🆕 capture version & platform if provided
-        if data.get("agent_version"):
-            session.agent_version = data.get("agent_version")
-        if data.get("platform"):
-            session.platform = data.get("platform")
-
         proof = Proof(
             id=str(uuid4()),
             user_id=session.employee_id,
@@ -161,11 +156,12 @@ def ingest_proof(data: dict):
         db.commit()
 
         return {"status": "recorded"}
+
     finally:
         db.close()
 
 # --------------------------------
-# AGENT STATUS (includes version/platform)
+# AGENT STATUS
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
@@ -185,28 +181,27 @@ def agent_status(org_id: str):
             if expires and expires.tzinfo is None:
                 expires = expires.replace(tzinfo=timezone.utc)
 
-            state = "ACTIVE" if expires and expires > now else "OFFLINE"
+            state = (
+                "ACTIVE"
+                if expires and expires > now
+                else "OFFLINE"
+            )
 
             result.append({
                 "employee_id": s.employee_id,
                 "state": state,
                 "expires_at": expires.isoformat() if expires else None,
-                # 🆕 fleet fields
-                "agent_version": s.agent_version,
-                "platform": s.platform,
+                "agent_version": getattr(s, "agent_version", None),
+                "platform": getattr(s, "platform", None),
             })
 
         return result
-
-    except Exception as e:
-        print("AGENT STATUS ERROR:", e)
-        return []
 
     finally:
         db.close()
 
 # --------------------------------
-# TRUST DECISION
+# TRUST DECISION — PHASE 19.1
 # --------------------------------
 @app.get("/decision/{user_id}")
 def decision(user_id: str):
@@ -220,24 +215,46 @@ def decision(user_id: str):
 
         if len(proofs) < 3:
             band = "insufficient_data"
-            confidence = None
-        else:
-            avg = sum(p.effort_score for p in proofs) / len(proofs)
-            confidence = round(avg, 3)
-            band = (
-                "high_trust" if avg >= 0.7
-                else "low_trust" if avg < 0.4
-                else "normal"
-            )
+            return {
+                "employee_id": user_id,
+                "band": band,
+                "confidence": None,
+                "effective_confidence": None,
+                "policy": resolve_action(band, None)["policy"],
+            }
 
-        action = resolve_action(band, confidence)
+        now = datetime.now(timezone.utc)
+
+        DECAY_LAMBDA = 0.15  # per hour
+
+        weighted_sum = 0.0
+        weight_total = 0.0
+
+        for p in proofs:
+            age_hours = (now - p.created_at).total_seconds() / 3600
+            weight = math.exp(-DECAY_LAMBDA * age_hours)
+            weighted_sum += p.effort_score * weight
+            weight_total += weight
+
+        effective_confidence = round(weighted_sum / weight_total, 3)
+
+        if effective_confidence >= 0.7:
+            band = "high_trust"
+        elif effective_confidence < 0.4:
+            band = "low_trust"
+        else:
+            band = "normal"
+
+        action = resolve_action(band, effective_confidence)
 
         return {
             "employee_id": user_id,
             "band": band,
-            "confidence": confidence,
+            "confidence": effective_confidence,
+            "effective_confidence": effective_confidence,
             "policy": action["policy"],
         }
+
     finally:
         db.close()
 
@@ -262,14 +279,12 @@ def get_proofs(user_id: str):
             }
             for p in proofs
         ]
-    except Exception as e:
-        print("PROOFS READ ERROR:", e)
-        return []
+
     finally:
         db.close()
 
 # --------------------------------
-# ACTION
+# ACTION LOG
 # --------------------------------
 @app.get("/action/{user_id}")
 def action(user_id: str):
