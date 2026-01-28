@@ -106,16 +106,9 @@ def activate_agent(data: dict):
 # HEARTBEAT
 # --------------------------------
 @app.post("/agent/heartbeat")
-def heartbeat(data: dict):
+def heartbeat(session_id: str, agent_version: str | None = None, platform: str | None = None):
     db = SessionLocal()
     try:
-        session_id = data.get("session_id")
-        agent_version = data.get("agent_version")
-        platform = data.get("platform")
-
-        if not session_id:
-            raise HTTPException(400, "session_id missing")
-
         s = (
             db.query(AgentSession)
             .filter(
@@ -126,12 +119,11 @@ def heartbeat(data: dict):
         )
 
         if not s:
-            raise HTTPException(403, "Invalid session")
+            raise HTTPException(403)
 
-        # extend lease
         s.expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
-        # 🔥 persist metadata
+        # 🔥 restore metadata updates
         if agent_version:
             s.agent_version = agent_version
         if platform:
@@ -140,7 +132,6 @@ def heartbeat(data: dict):
         db.commit()
 
         return {"status": "alive"}
-
     finally:
         db.close()
 
