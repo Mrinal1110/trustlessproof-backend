@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-TrustlessProof Agent — Phase 18.2
-Resilient, cross-platform agent with offline buffering
-
-Guarantees:
-- No proof loss
-- FIFO delivery
-- Network-failure safe
+TrustlessProof Agent — Phase 18.3
+Resilient, cross-platform agent with fleet visibility
 """
 
 import os
@@ -15,7 +10,7 @@ import time
 import json
 import threading
 import subprocess
-import platform
+import platform as py_platform
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,10 +23,7 @@ import requests
 STATE_DIR = Path.home() / ".trustlessproof"
 CONFIG_PATH = STATE_DIR / "agent.json"
 SESSION_PATH = STATE_DIR / "session.json"
-
 QUEUE_PATH = STATE_DIR / "queue.json"
-
-LOG_PATH = STATE_DIR / "agent.log"
 
 # -----------------------
 # Load config
@@ -52,13 +44,13 @@ EMPLOYEE_ID = cfg["employee_id"]
 API_BASE = cfg["api_base"]
 SESSION_ID = sess["session_id"]
 
-OS = platform.system().lower()
+PLATFORM = py_platform.system().lower()
 
-print("🟢 TrustlessProof Agent Running (Phase 18.2)")
+print("🟢 TrustlessProof Agent Running (Phase 18.3)")
 print("Org      :", ORG_ID)
 print("Employee :", EMPLOYEE_ID)
 print("Session  :", SESSION_ID)
-print("OS       :", OS)
+print("Platform :", PLATFORM)
 
 # -----------------------
 # Queue helpers
@@ -93,15 +85,14 @@ def safe_run(cmd):
 
 def get_idle_seconds():
     try:
-        if OS == "linux":
+        if PLATFORM == "linux":
             out = safe_run(["xprintidle"])
             if out and out.isdigit():
                 return int(out) // 1000
-
             with open("/proc/uptime") as f:
                 return int(float(f.read().split()[0]) % 300)
 
-        elif OS == "darwin":
+        elif PLATFORM == "darwin":
             out = safe_run(["ioreg", "-c", "IOHIDSystem"])
             if not out:
                 return None
@@ -109,7 +100,7 @@ def get_idle_seconds():
                 if "HIDIdleTime" in line:
                     return int(line.split("=")[-1].strip()) // 1_000_000_000
 
-        elif OS == "windows":
+        elif PLATFORM == "windows":
             import ctypes
             class LASTINPUTINFO(ctypes.Structure):
                 _fields_ = [("cbSize", ctypes.c_uint),
@@ -126,37 +117,17 @@ def get_idle_seconds():
     return None
 
 # -----------------------
-# Active app
-# -----------------------
-
-def get_active_app():
-    try:
-        if OS == "darwin":
-            out = safe_run([
-                "osascript",
-                "-e",
-                'tell application "System Events" to get name of first application process whose frontmost is true'
-            ])
-            return out or "unknown"
-    except Exception:
-        pass
-
-    return "unknown"
-
-# -----------------------
 # Confidence
 # -----------------------
 
 def compute_confidence(idle):
     score = 1.0
-
     if idle is None:
         score -= 0.2
     elif idle > 600:
         score -= 0.5
     elif idle > 120:
         score -= 0.2
-
     return round(max(0.1, min(score, 1.0)), 3)
 
 # -----------------------
@@ -173,11 +144,10 @@ def heartbeat_loop():
             )
         except:
             pass
-
         time.sleep(30)
 
 # -----------------------
-# Proof loop (BUFFERED)
+# Proof loop (buffered)
 # -----------------------
 
 def proof_loop():
@@ -191,17 +161,17 @@ def proof_loop():
             proof = {
                 "session_id": SESSION_ID,
                 "effort": confidence,
+                "agent_version": "0.18.3",
+                "platform": PLATFORM,
                 "signals": {
                     "idle_seconds": idle
                 },
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "agent_version": "0.18.2"
             }
 
             queue.append(proof)
             save_queue(queue)
 
-            # Try sending from front
             while queue:
                 head = queue[0]
                 try:
@@ -213,7 +183,11 @@ def proof_loop():
                     if r.status_code == 200:
                         queue.pop(0)
                         save_queue(queue)
-                        print(f"[PROOF] delivered confidence={head['effort']}")
+                        print(
+                            f"[PROOF] delivered v={head['agent_version']} "
+                            f"platform={head['platform']} "
+                            f"confidence={head['effort']}"
+                        )
                     else:
                         break
                 except:
