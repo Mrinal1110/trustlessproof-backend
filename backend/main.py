@@ -122,6 +122,13 @@ def heartbeat(session_id: str):
             raise HTTPException(403)
 
         s.expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+ 
+        # 🔥 restore metadata updates
+        if agent_version:
+            s.agent_version = agent_version
+        if platform:
+            s.platform = platform
+
         db.commit()
 
         return {"status": "alive"}
