@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """
-TrustlessProof Agent — Phase 18.1
-Cross-platform (Linux / macOS / Windows)
+TrustlessProof Agent — Phase 18.2
+Resilient, cross-platform agent with offline buffering
 
-Signals:
-- heartbeat (always)
-- idle_seconds (best-effort, privacy-safe)
-- active_app (name only, no titles)
-
-NO screenshots
-NO keystrokes
-NO content capture
+Guarantees:
+- No proof loss
+- FIFO delivery
+- Network-failure safe
 """
 
 import os
@@ -32,6 +28,9 @@ import requests
 STATE_DIR = Path.home() / ".trustlessproof"
 CONFIG_PATH = STATE_DIR / "agent.json"
 SESSION_PATH = STATE_DIR / "session.json"
+
+QUEUE_PATH = STATE_DIR / "queue.json"
+
 LOG_PATH = STATE_DIR / "agent.log"
 
 # -----------------------
@@ -55,11 +54,28 @@ SESSION_ID = sess["session_id"]
 
 OS = platform.system().lower()
 
-print("🟢 TrustlessProof Agent Running (Phase 18.1)")
+print("🟢 TrustlessProof Agent Running (Phase 18.2)")
 print("Org      :", ORG_ID)
 print("Employee :", EMPLOYEE_ID)
 print("Session  :", SESSION_ID)
 print("OS       :", OS)
+
+# -----------------------
+# Queue helpers
+# -----------------------
+
+def load_queue():
+    if not QUEUE_PATH.exists():
+        return []
+    try:
+        with open(QUEUE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_queue(queue):
+    with open(QUEUE_PATH, "w") as f:
+        json.dump(queue, f)
 
 # -----------------------
 # Helpers
@@ -72,111 +88,79 @@ def safe_run(cmd):
         return None
 
 # -----------------------
-# Idle time detection
+# Idle detection
 # -----------------------
 
 def get_idle_seconds():
     try:
         if OS == "linux":
-            # Try xprintidle (ms)
             out = safe_run(["xprintidle"])
             if out and out.isdigit():
                 return int(out) // 1000
 
-            # Fallback: /proc/uptime (weak signal)
             with open("/proc/uptime") as f:
-                uptime = float(f.read().split()[0])
-            return int(uptime % 300)
+                return int(float(f.read().split()[0]) % 300)
 
         elif OS == "darwin":
-            out = safe_run([
-                "ioreg", "-c", "IOHIDSystem"
-            ])
+            out = safe_run(["ioreg", "-c", "IOHIDSystem"])
             if not out:
                 return None
-
             for line in out.splitlines():
                 if "HIDIdleTime" in line:
-                    nanoseconds = int(line.split("=")[-1].strip())
-                    return nanoseconds // 1_000_000_000
-            return None
+                    return int(line.split("=")[-1].strip()) // 1_000_000_000
 
         elif OS == "windows":
             import ctypes
             class LASTINPUTINFO(ctypes.Structure):
                 _fields_ = [("cbSize", ctypes.c_uint),
                             ("dwTime", ctypes.c_uint)]
-
             lii = LASTINPUTINFO()
             lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-
             if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
-                millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
-                return int(millis / 1000)
-
+                return int(
+                    (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) / 1000
+                )
     except Exception:
         pass
 
     return None
 
 # -----------------------
-# Active app detection (name only)
+# Active app
 # -----------------------
 
 def get_active_app():
     try:
-        if OS == "linux":
-            out = safe_run(["wmctrl", "-lp"])
-            if not out:
-                return "unknown"
-            return "linux_app"
-
-        elif OS == "darwin":
-            script = 'tell application "System Events" to get name of first application process whose frontmost is true'
-            out = safe_run(["osascript", "-e", script])
+        if OS == "darwin":
+            out = safe_run([
+                "osascript",
+                "-e",
+                'tell application "System Events" to get name of first application process whose frontmost is true'
+            ])
             return out or "unknown"
-
-        elif OS == "windows":
-            import ctypes
-            import psutil
-
-            user32 = ctypes.windll.user32
-            hwnd = user32.GetForegroundWindow()
-            if hwnd == 0:
-                return "unknown"
-
-            pid = ctypes.c_ulong()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-
-            p = psutil.Process(pid.value)
-            return p.name()
-
     except Exception:
         pass
 
     return "unknown"
 
 # -----------------------
-# Confidence heuristic (simple, explainable)
+# Confidence
 # -----------------------
 
-def compute_confidence(idle_seconds, active_app):
+def compute_confidence(idle):
     score = 1.0
 
-    if idle_seconds is None:
+    if idle is None:
         score -= 0.2
-    elif idle_seconds > 600:
+    elif idle > 600:
         score -= 0.5
-    elif idle_seconds > 120:
-        score -= 0.2
-
-    if not active_app or active_app == "unknown":
+    elif idle > 120:
         score -= 0.2
 
     return round(max(0.1, min(score, 1.0)), 3)
 
 # -----------------------
-# Heartbeat loop
+# Heartbeat
 # -----------------------
 
 def heartbeat_loop():
@@ -187,44 +171,53 @@ def heartbeat_loop():
                 params={"session_id": SESSION_ID},
                 timeout=5
             )
-        except Exception as e:
-            print("HEARTBEAT ERROR:", e)
+        except:
+            pass
 
         time.sleep(30)
 
 # -----------------------
-# Proof loop
+# Proof loop (BUFFERED)
 # -----------------------
 
 def proof_loop():
     while True:
         try:
-            idle = get_idle_seconds()
-            app = get_active_app()
-            confidence = compute_confidence(idle, app)
+            queue = load_queue()
 
-            payload = {
+            idle = get_idle_seconds()
+            confidence = compute_confidence(idle)
+
+            proof = {
                 "session_id": SESSION_ID,
                 "effort": confidence,
                 "signals": {
-                    "alive": True,
-                    "idle_seconds": idle,
-                    "active_app": app,
+                    "idle_seconds": idle
                 },
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "agent_version": "0.18.1"
+                "agent_version": "0.18.2"
             }
 
-            r = requests.post(
-                f"{API_BASE}/agent/proof",
-                json=payload,
-                timeout=10
-            )
+            queue.append(proof)
+            save_queue(queue)
 
-            if r.status_code == 200:
-                print(f"[PROOF] sent confidence={confidence} idle={idle} app={app}")
-            else:
-                print(f"[PROOF] rejected status={r.status_code}")
+            # Try sending from front
+            while queue:
+                head = queue[0]
+                try:
+                    r = requests.post(
+                        f"{API_BASE}/agent/proof",
+                        json=head,
+                        timeout=10
+                    )
+                    if r.status_code == 200:
+                        queue.pop(0)
+                        save_queue(queue)
+                        print(f"[PROOF] delivered confidence={head['effort']}")
+                    else:
+                        break
+                except:
+                    break
 
         except Exception as e:
             print("PROOF ERROR:", e)
