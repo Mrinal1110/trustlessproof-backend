@@ -1,12 +1,10 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime
 from database import Base
-from datetime import datetime
+from datetime import datetime, timezone
 
 # -------------------------
 # Proofs
 # -------------------------
-from sqlalchemy import Column, String, Float, DateTime
-from datetime import datetime, timezone
 
 class Proof(Base):
     __tablename__ = "proofs"
@@ -20,10 +18,10 @@ class Proof(Base):
         nullable=False,
     )
 
-
 # -------------------------
 # Adaptive Baseline
 # -------------------------
+
 class UserBaseline(Base):
     __tablename__ = "user_baselines"
 
@@ -34,10 +32,10 @@ class UserBaseline(Base):
     avg_confidence = Column(Float)
     samples = Column(Integer)
 
+# -------------------------
+# Action Log
+# -------------------------
 
-# -------------------------
-# Action Log (future)
-# -------------------------
 class ActionLog(Base):
     __tablename__ = "action_logs"
 
@@ -48,17 +46,16 @@ class ActionLog(Base):
     message = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
-
 # =============================
 # 🔐 IDENTITY & AUTHORITY
 # =============================
+
 class Org(Base):
     __tablename__ = "orgs"
 
     id = Column(String, primary_key=True, index=True)
     name = Column(String)
     active = Column(Boolean, default=True)
-
 
 class InviteToken(Base):
     __tablename__ = "invite_tokens"
@@ -71,7 +68,6 @@ class InviteToken(Base):
     used = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-
 class AgentSession(Base):
     __tablename__ = "agent_sessions"
 
@@ -79,6 +75,11 @@ class AgentSession(Base):
     org_id = Column(String, index=True)
     employee_id = Column(String, index=True)
 
+    # TTL
     expires_at = Column(DateTime)
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 🆕 Fleet visibility
+    agent_version = Column(String, nullable=True)
+    platform = Column(String, nullable=True)

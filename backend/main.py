@@ -13,7 +13,6 @@ from models import (
     UserBaseline,
     ActionLog,
 )
-
 from actions import resolve_action
 
 # --------------------------------
@@ -26,7 +25,6 @@ Base.metadata.create_all(bind=engine)
 # --------------------------------
 app = FastAPI()
 
-# ✅ CORS — THIS IS CRITICAL
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -87,6 +85,7 @@ def activate_agent(data: dict):
             active=True,
             created_at=datetime.now(timezone.utc),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            # version/platform filled on first proof
         )
 
         invite.used = True
@@ -127,7 +126,7 @@ def heartbeat(session_id: str):
         db.close()
 
 # --------------------------------
-# PROOF INGESTION (PHASE 17 — FIXED)
+# PROOF INGESTION (stores version/platform)
 # --------------------------------
 @app.post("/agent/proof")
 def ingest_proof(data: dict):
@@ -145,6 +144,12 @@ def ingest_proof(data: dict):
         if not session:
             raise HTTPException(403, "Invalid session")
 
+        # 🆕 capture version & platform if provided
+        if data.get("agent_version"):
+            session.agent_version = data.get("agent_version")
+        if data.get("platform"):
+            session.platform = data.get("platform")
+
         proof = Proof(
             id=str(uuid4()),
             user_id=session.employee_id,
@@ -156,13 +161,11 @@ def ingest_proof(data: dict):
         db.commit()
 
         return {"status": "recorded"}
-
     finally:
         db.close()
 
-
 # --------------------------------
-# ✅ AGENT STATUS (SAFE, NO 500)
+# AGENT STATUS (includes version/platform)
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
@@ -175,32 +178,30 @@ def agent_status(org_id: str):
             .filter(AgentSession.org_id == org_id)
             .all()
         )
-        
+
         result = []
         for s in sessions:
             expires = s.expires_at
             if expires and expires.tzinfo is None:
                 expires = expires.replace(tzinfo=timezone.utc)
 
-            state = (
-                "ACTIVE"
-                if expires and expires > now
-                else "OFFLINE"
-            )
+            state = "ACTIVE" if expires and expires > now else "OFFLINE"
 
             result.append({
                 "employee_id": s.employee_id,
                 "state": state,
                 "expires_at": expires.isoformat() if expires else None,
+                # 🆕 fleet fields
+                "agent_version": s.agent_version,
+                "platform": s.platform,
             })
 
         return result
 
     except Exception as e:
-        # 🔥 NEVER crash the API
         print("AGENT STATUS ERROR:", e)
         return []
-        
+
     finally:
         db.close()
 
@@ -224,10 +225,8 @@ def decision(user_id: str):
             avg = sum(p.effort_score for p in proofs) / len(proofs)
             confidence = round(avg, 3)
             band = (
-                "high_trust"
-                if avg >= 0.7
-                else "low_trust"
-                if avg < 0.4
+                "high_trust" if avg >= 0.7
+                else "low_trust" if avg < 0.4
                 else "normal"
             )
 
@@ -243,7 +242,7 @@ def decision(user_id: str):
         db.close()
 
 # --------------------------------
-# PROOFS READ (FRONTEND)
+# PROOFS READ
 # --------------------------------
 @app.get("/proofs/{user_id}")
 def get_proofs(user_id: str):
@@ -263,17 +262,14 @@ def get_proofs(user_id: str):
             }
             for p in proofs
         ]
-
     except Exception as e:
         print("PROOFS READ ERROR:", e)
         return []
-
     finally:
         db.close()
 
-
 # --------------------------------
-# ACTION (PHASE 16)
+# ACTION
 # --------------------------------
 @app.get("/action/{user_id}")
 def action(user_id: str):
