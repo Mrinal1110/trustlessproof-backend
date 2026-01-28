@@ -87,6 +87,8 @@ def activate_agent(data: dict):
             active=True,
             created_at=datetime.now(timezone.utc),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            agent_version=data.get("agent_version"),
+            platform=data.get("platform"),
         )
 
         invite.used = True
