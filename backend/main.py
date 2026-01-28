@@ -106,7 +106,7 @@ def activate_agent(data: dict):
 # HEARTBEAT
 # --------------------------------
 @app.post("/agent/heartbeat")
-def heartbeat(data: dict):
+def heartbeat(data: str):
     db = SessionLocal()
     try:
         session_id = data.get("session_id")
