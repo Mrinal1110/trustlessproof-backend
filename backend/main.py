@@ -31,6 +31,7 @@ app.add_middleware(
         "http://localhost:5173",
         "https://trustlessproof.com",
         "https://dashboard.trustlessproof.com",
+        "https://trustlessproof-front.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],

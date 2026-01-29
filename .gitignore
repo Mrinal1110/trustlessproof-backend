@@ -1,5 +1,6 @@
+cat > .gitignore <<'EOF'
 # ----------------------------
-# OS / Editor
+# Global ignores
 # ----------------------------
 .DS_Store
 Thumbs.db
@@ -7,16 +8,15 @@ Thumbs.db
 .idea/
 
 # ----------------------------
-# Node / Frontend
+# Node / frontend
 # ----------------------------
 node_modules/
 dist/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+dist-ssr/
+.vercel/
 
 # ----------------------------
-# Python / Backend / Agent
+# Python / backend / agent
 # ----------------------------
 __pycache__/
 *.pyc
@@ -26,25 +26,19 @@ venv/
 .env
 
 # ----------------------------
-# Build / Runtime Artifacts
+# Workspace directories
+# ----------------------------
+# Workspace directories (keep tracked, ignore only artifacts)
+agent-core/node_modules/
+backend/__pycache__/
+backend/*.sqlite
+backend/*.db
+marketing/dist/
+
+# ----------------------------
+# Local artifacts
 # ----------------------------
 *.sqlite
 *.db
-
-# ----------------------------
-# Local / Experimental Files
-# ----------------------------
-workspace/
-dashboard_old/
-confidence_test.txt
-send_fake_proof.py
-session.py
-session.txt
-test_edit.txt
-work_log.txt
-trustlessproof_test_user.csv
-
-# ----------------------------
-# Agent Local State
-# ----------------------------
-.trustlessproof/
+*.log
+EOF
