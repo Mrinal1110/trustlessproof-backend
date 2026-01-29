@@ -25,6 +25,8 @@ CONFIG_PATH = STATE_DIR / "agent.json"
 SESSION_PATH = STATE_DIR / "session.json"
 QUEUE_PATH = STATE_DIR / "queue.json"
 
+AGENT_VERSION = "0.18.3"
+
 # -----------------------
 # Load config
 # -----------------------
@@ -51,6 +53,7 @@ print("Org      :", ORG_ID)
 print("Employee :", EMPLOYEE_ID)
 print("Session  :", SESSION_ID)
 print("Platform :", PLATFORM)
+print("Version  :", AGENT_VERSION)
 
 # -----------------------
 # Queue helpers
@@ -131,7 +134,7 @@ def compute_confidence(idle):
     return round(max(0.1, min(score, 1.0)), 3)
 
 # -----------------------
-# Heartbeat
+# HEARTBEAT — FIXED
 # -----------------------
 
 def heartbeat_loop():
@@ -139,15 +142,20 @@ def heartbeat_loop():
         try:
             requests.post(
                 f"{API_BASE}/agent/heartbeat",
-                params={"session_id": SESSION_ID},
+                json={
+                    "session_id": SESSION_ID,
+                    "agent_version": AGENT_VERSION,
+                    "platform": PLATFORM,
+                },
                 timeout=5
             )
-        except:
+        except Exception:
             pass
+
         time.sleep(30)
 
 # -----------------------
-# Proof loop (buffered)
+# PROOF LOOP (BUFFERED)
 # -----------------------
 
 def proof_loop():
@@ -161,7 +169,7 @@ def proof_loop():
             proof = {
                 "session_id": SESSION_ID,
                 "effort": confidence,
-                "agent_version": "0.18.3",
+                "agent_version": AGENT_VERSION,
                 "platform": PLATFORM,
                 "signals": {
                     "idle_seconds": idle
@@ -190,7 +198,7 @@ def proof_loop():
                         )
                     else:
                         break
-                except:
+                except Exception:
                     break
 
         except Exception as e:
@@ -199,7 +207,7 @@ def proof_loop():
         time.sleep(60)
 
 # -----------------------
-# Start
+# START
 # -----------------------
 
 threading.Thread(target=heartbeat_loop, daemon=True).start()
