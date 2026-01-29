@@ -1,0 +1,547 @@
+/* ========================= GLOBAL RESET ========================= */
+* { box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background:
+    radial-gradient(
+      1200px 500px at 50% -180px,
+      rgba(99,102,241,0.28),
+      rgba(99,102,241,0.12) 35%,
+      transparent 65%
+    ),
+    linear-gradient(
+      to bottom,
+      #050b1e 0%,
+      #020617 55%,
+      #020617 100%
+    );
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* =========================
+   SCROLL SURFACE
+========================= */
+.app-root {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  background:
+    radial-gradient(1200px 600px at 50% -200px, rgba(99,102,241,0.12), transparent),
+    radial-gradient(900px 500px at 80% 10%, rgba(79,70,229,0.08), transparent),
+    #020617;
+  color: #e5e7eb;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ========================= HEADER (QUIET AUTHORITY) ========================= */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: 72px;
+  padding: 0 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(2, 6, 23, 0.92);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  white-space: nowrap;
+}
+
+.header-brand h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.header-tagline {
+  font-size: 12px;
+  color: #9ca3af;
+  padding-left: 14px;
+  border-left: 1px solid rgba(255,255,255,0.08);
+}
+
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.header-nav a,
+.header-nav button {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.header-nav a:hover,
+.header-nav button:hover {
+  color: #e5e7eb;
+}
+
+.nav-cta {
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(99,102,241,0.15);
+  color: #c7d2fe;
+}
+
+.nav-cta:hover {
+  background: rgba(99,102,241,0.25);
+}
+
+/* ========================= SECTIONS ========================= */
+.section {
+  padding: 120px 48px;
+}
+
+.section.narrow {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* ========================= SCROLL REVEAL ========================= */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity 0.9s cubic-bezier(0.22,1,0.36,1),
+    transform 0.9s cubic-bezier(0.22,1,0.36,1);
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* ========================= HERO (CENTER OF GRAVITY) ========================= */
+/* ======================================================
+MARKETING SYSTEM (DO NOT USE INSIDE /app)
+====================================================== */
+.hero-split {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 96px;
+  align-items: center;
+}
+
+.hero-title {
+  font-size: 76px;
+  line-height: 1.01;
+  letter-spacing: -1.6px;
+  margin: 0 0 36px;
+}
+
+.hero-subtitle {
+  font-size: 19px;
+  line-height: 1.65;
+  color: #9ca3af;
+  max-width: 520px;
+  margin-bottom: 44px;
+}
+
+.hero-cta {
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  color: #fff;
+  border: none;
+  padding: 16px 34px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.hero-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 36px rgba(99,102,241,0.45);
+}
+
+/* ========================= TRUST FLOW (SYSTEM FEEL) ========================= */
+.trust-visual {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.node {
+  padding: 18px 26px;
+  border-radius: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(255,255,255,0.06);
+  animation: pulse 5s infinite ease-in-out;
+}
+
+.node.mid { animation-delay: 1s; }
+.node.target { animation-delay: 2s; }
+
+.line {
+  width: 72px;
+  height: 2px;
+  background: linear-gradient(
+    to right,
+    rgba(99,102,241,0.12),
+    rgba(99,102,241,0.85)
+  );
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 rgba(99,102,241,0); }
+  50% { box-shadow: 0 0 24px rgba(99,102,241,0.35); }
+  100% { box-shadow: 0 0 0 rgba(99,102,241,0); }
+}
+
+/* ========================= KPI GRID ========================= */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 36px;
+}
+
+.card {
+  background: rgba(255,255,255,0.04);
+  border-radius: 22px;
+  padding: 32px;
+  box-shadow: 0 32px 64px rgba(0,0,0,0.45);
+}
+
+.metric {
+  font-size: 46px;
+  font-weight: 600;
+}
+
+.metric.small {
+  font-size: 30px;
+}
+
+/* ========================= ANALYTICS ========================= */
+.chart-container {
+  background: rgba(255,255,255,0.04);
+  border-radius: 22px;
+  padding: 32px;
+}
+
+/* ========================= FOOTER ========================= */
+.footer {
+  padding: 36px 48px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  justify-content: space-between;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+/* ========================= TRUST BAND COLORS ========================= */
+.trust-verified { color: #4ade80; }
+.trust-probable { color: #facc15; }
+.trust-uncertain { color: #fb923c; }
+.trust-low_trust { color: #f87171; }
+
+/* ========================= SAFETY: NO WHITE FLASH ========================= */
+body { background-color: #020617; }
+
+/* ========================= LONG FORM TEXT ========================= */
+.long-text {
+  max-width: 760px;
+  font-size: 17px;
+  line-height: 1.7;
+  color: #cbd5f5;
+  margin: 20px 0;
+}
+
+/* ========================= FOR COMPANIES / INDIVIDUALS ========================= */
+.split-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 48px;
+  margin-top: 40px;
+}
+
+.split-card {
+  background: rgba(255,255,255,0.04);
+  border-radius: 22px;
+  padding: 36px;
+  box-shadow: 0 32px 64px rgba(0,0,0,0.45);
+}
+
+.split-card h4 {
+  font-size: 20px;
+  margin-bottom: 16px;
+}
+
+.bullet-list {
+  margin-top: 20px;
+  padding-left: 20px;
+  color: #cbd5f5;
+}
+
+.bullet-list li {
+  margin-bottom: 10px;
+  line-height: 1.6;
+}
+
+/* ========================= CHECKLIST ========================= */
+.checklist {
+  list-style: none;
+  padding-left: 0;
+  margin-top: 24px;
+}
+
+.checklist li {
+  position: relative;
+  padding-left: 28px;
+  margin-bottom: 14px;
+  color: #cbd5f5;
+}
+
+.checklist li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: #4ade80;
+  font-weight: bold;
+}
+
+/* ========================= TIMELINE ========================= */
+.timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 28px;
+  margin-top: 32px;
+}
+
+.timeline strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* ========================= SUBTLE TEXT ========================= */
+.long-text.subtle {
+  color: #94a3b8;
+  font-size: 15px;
+}
+
+/* ========================= FAQ ========================= */
+.faq > div { margin-bottom: 28px; }
+.faq strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* ========================= CTA SECTION ========================= */
+.cta-section { text-align: center; }
+.cta-section .hero-cta { margin-top: 24px; }
+
+.app-shell { background: #0b0b0b; color: #fff; }
+.sidebar {
+  width: 240px;
+  background: #111;
+  padding: 16px;
+  border-right: 1px solid #222;
+}
+
+.app-main {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.employee-list li:hover { background: #222; }
+
+/* ========================= MARKETING ONLY BACKGROUND ========================= */
+.marketing-bg {
+  background:
+    radial-gradient(1200px 600px at 50% -200px, rgba(99,102,241,0.12), transparent),
+    radial-gradient(900px 500px at 80% 10%, rgba(79,70,229,0.08), transparent),
+    #020617;
+}
+
+/* ============================= */
+/* VISIBILITY FIX — DO NOT TOUCH LOGIC */
+/* ============================= */
+body {
+  color: #eaeaf0;
+  background-color: #020617;
+}
+
+h1, h2, h3, h4, h5 { color: #ffffff; }
+
+p, span, label, th, td { color: #d6d6e0; }
+
+div[style*="border"] {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+table { border-collapse: collapse; }
+
+th {
+  color: #ffffff;
+  text-align: left;
+  padding-bottom: 6px;
+}
+
+td { padding: 6px 12px 6px 0; }
+
+button {
+  background: #1e293b;
+  color: #ffffff;
+  border: 1px solid #334155;
+}
+
+button:hover { background: #334155; }
+
+aside { color: #ffffff; }
+
+svg text { fill: #ffffff; }
+
+/* ---------- UX POLISH BASE ---------- */
+:root {
+  --bg-main: radial-gradient(circle at top, #0b1220, #020617 70%);
+  --bg-card: rgba(255, 255, 255, 0.04);
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --text-primary: #e5e7eb;
+  --text-muted: #9ca3af;
+  --low: #ef4444;
+  --probable: #facc15;
+  --high: #22c55e;
+}
+
+body {
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* ---------- HEADINGS ---------- */
+h1 { font-size: 32px; font-weight: 600; margin-bottom: 8px; }
+h2 { font-size: 20px; font-weight: 500; margin-bottom: 16px; }
+
+p { color: var(--text-muted); line-height: 1.6; }
+
+/* ---------- CARDS ---------- */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 24px;
+  backdrop-filter: blur(6px);
+}
+
+/* ---------- BUTTONS ---------- */
+button {
+  background: #1f2933;
+  border: 1px solid var(--border-soft);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+button:hover { background: #273449; }
+
+button.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+button.primary:hover { background: #1d4ed8; }
+
+/* ---------- INPUTS ---------- */
+input {
+  background: #020617;
+  border: 1px solid var(--border-soft);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+/* ======================================================
+APP UX POLISH (SAFE OVERRIDES)
+Applies ONLY inside AppLayout
+====================================================== */
+.app-shell,
+.app-main {
+  background: #020617;
+}
+
+.app-main {
+  background:
+    radial-gradient(800px 400px at 50% -200px, rgba(99,102,241,0.08), transparent),
+    #020617;
+  padding-bottom: 96px;
+}
+
+.app-main .card {
+  background: rgba(255,255,255,0.045);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: none;
+}
+
+.app-main h1 {
+  font-size: 28px;
+  margin-bottom: 16px;
+}
+
+.app-main h2 {
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+
+.trust-verified,
+.trust-probable,
+.trust-uncertain,
+.trust-low_trust {
+  font-weight: 600;
+}
+
+.app-main button {
+  background: #1e293b;
+  border: 1px solid #334155;
+}
+
+.app-main button.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.app-main input {
+  background: #020617;
+  border: 1px solid #334155;
+}

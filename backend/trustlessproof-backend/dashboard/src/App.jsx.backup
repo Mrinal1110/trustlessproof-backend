@@ -1,0 +1,274 @@
+import HowItWorks3D from "./HowItWorks3D";
+import { useEffect, useRef, useState } from "react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer
+} from "recharts";
+
+const API = "https://trustlessproof-backend-production.up.railway.app";
+const USER = "test_user";
+const POLL_INTERVAL = 10000; // 10 seconds
+
+export default function App() {
+  const [proofs, setProofs] = useState([]);
+  const [show3D, setShow3D] = useState(false);
+  const [decision, setDecision] = useState(null);
+  const sectionsRef = useRef([]);
+  const liveRef = useRef(null);
+
+  // -----------------------
+  // Live data polling
+  // -----------------------
+  useEffect(() => {
+    const fetchData = () => {
+      fetch(`${API}/proofs`)
+        .then(r => r.json())
+        .then(p =>
+          setProofs(
+            p
+              .filter(x => x.user_id === USER)
+              .sort((a, b) => a.id - b.id)
+          )
+        )
+        .catch(() => {});
+
+      fetch(`${API}/decision/${USER}`)
+        .then(r => r.json())
+        .then(setDecision)
+        .catch(() => {});
+    };
+
+    fetchData();
+    const id = setInterval(fetchData, POLL_INTERVAL);
+    return () => clearInterval(id);
+  }, []);
+
+  // -----------------------
+  // Scroll reveal animation
+  // -----------------------
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("visible");
+          }
+        });
+      },
+      { threshold: 0.15 }
+    );
+
+    sectionsRef.current.forEach(el => el && observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
+
+  const reveal = el => {
+    if (el && !sectionsRef.current.includes(el)) {
+      sectionsRef.current.push(el);
+    }
+  };
+
+  const scrollToLive = () => {
+    liveRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const trustBand = decision?.decision?.band ?? "unknown";
+
+  return (
+    <div className="app-root">
+      {/* ================= HEADER ================= */}
+      <header className="header">
+        <div className="header-brand">
+          <h1>TrustlessProof</h1>
+          <span className="header-tagline">
+            Trustless Proof of Human Effort
+          </span>
+        </div>
+
+        <nav className="header-nav">
+          <button onClick={() => setShow3D(true)}>
+            How it works
+          </button>
+
+          <button className="nav-cta" onClick={scrollToLive}>
+            Live proof
+          </button>
+        </nav>
+      </header>
+
+      {/* ================= HERO ================= */}
+      <section ref={reveal} className="section hero-split reveal">
+        <div>
+          <h2 className="hero-title">
+            Work.<br />Proven.<br />Not Watched.
+          </h2>
+          <p className="hero-subtitle">
+            Cryptographic proof of real human effort —
+            built for trust, not surveillance.
+          </p>
+          <button className="hero-cta" onClick={scrollToLive}>
+            Watch Trust Emerge
+          </button>
+        </div>
+
+        <div className="trust-visual">
+          <div className="node">Activity</div>
+          <div className="line" />
+          <div className="node mid">Proof</div>
+          <div className="line" />
+          <div className="node target">Trust</div>
+        </div>
+      </section>
+
+      {/* ================= INTRO ================= */}
+      <section ref={reveal} className="section narrow reveal">
+        <h3>What is TrustlessProof?</h3>
+        <p className="long-text">
+          TrustlessProof is a local-first verification system that proves real
+          human work occurred — without recording screens, keystrokes, or content.
+          It replaces surveillance with cryptographic continuity and behavioral
+          signals that are private by design.
+        </p>
+
+        <p className="long-text">
+          Instead of asking <em>“What did you do?”</em>, TrustlessProof answers
+          the only question that matters for organizations:
+          <strong> “Did real work happen?”</strong>
+        </p>
+      </section>
+
+      {/* ================= WHY ================= */}
+      <section ref={reveal} className="section narrow reveal">
+        <h3>Why this exists</h3>
+        <p className="long-text">
+          Remote work broke traditional trust mechanisms. Companies responded
+          with screenshots, webcams, and activity trackers — creating legal risk,
+          burnout, and false productivity signals.
+        </p>
+
+        <p className="long-text">
+          TrustlessProof was built on a different assumption:
+          <strong> trust should be verified, not enforced.</strong>
+        </p>
+      </section>
+
+      {/* ================= HOW ================= */}
+      <section id="how" ref={reveal} className="section reveal">
+        <div className="kpi-grid">
+          <div className="card">
+            <h4>Session Confidence</h4>
+            <div className="metric">
+              {decision ? decision.session_confidence.toFixed(2) : "—"}
+            </div>
+          </div>
+
+          <div className="card">
+            <h4>Trust Classification</h4>
+            <div className={`metric small trust-${trustBand}`}>
+              {decision ? decision.decision.label : "Connecting"}
+            </div>
+            <p>
+              {decision
+                ? decision.decision.explanation
+                : "Deriving trust from cryptographic effort signals…"}
+            </p>
+          </div>
+
+          <div className="card">
+            <h4>Verified Windows</h4>
+            <div className="metric">
+              {decision ? decision.windows : "—"}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ================= LIVE ================= */}
+      <section
+        ref={el => {
+          reveal(el);
+          liveRef.current = el;
+        }}
+        className="section narrow analytics reveal"
+      >
+        <h3>Confidence Over Time</h3>
+
+        <div className="chart-container">
+          <ResponsiveContainer width="100%" height={340}>
+            <LineChart data={proofs}>
+              <XAxis dataKey="id" />
+              <YAxis domain={[0, 1]} />
+              <Tooltip
+                formatter={(value, _, props) => [
+                  value,
+                  `Confidence (${props.payload.flags || "clean"})`
+                ]}
+              />
+              <Line
+                type="monotone"
+                dataKey="confidence"
+                stroke="#6366f1"
+                strokeWidth={3}
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      {/* ================= PRIVACY ================= */}
+      <section ref={reveal} className="section narrow reveal">
+        <h3>Privacy & Ethics</h3>
+        <p className="long-text">
+          TrustlessProof never records screens, keystrokes, audio, video,
+          messages, or file contents. All effort analysis happens locally.
+          Only cryptographic proofs and numerical signals leave the device.
+        </p>
+
+        <p className="long-text">
+          This makes the system compatible with modern privacy regulations
+          and suitable for high-trust work environments.
+        </p>
+      </section>
+
+      {/* ================= PILOT CTA ================= */}
+      <section ref={reveal} className="section narrow reveal cta-section">
+        <h3>Run a pilot</h3>
+
+        <p className="long-text">
+          The best way to understand TrustlessProof is to try it with a small,
+          real team. No long-term contracts. No forced rollout.
+        </p>
+
+        <ul className="bullet-list">
+          <li>3–5 volunteers</li>
+          <li>7 days of normal work</li>
+          <li>Clear confidence and audit outputs</li>
+        </ul>
+
+        <button
+          className="hero-cta"
+          onClick={() =>
+            window.location.href =
+              "mailto:pilot@trustlessproof.com?subject=TrustlessProof Pilot Request&body=Company:%0ATeam size:%0ARemote/Hybrid:%0AUse case:%0ATimeline:"
+          }
+        >
+          Start a pilot
+        </button>
+      </section>
+
+      {/* ================= FOOTER ================= */}
+      <footer className="footer">
+        <span>© TrustlessProof</span>
+        <span>Zero-knowledge productivity proof for remote teams</span>
+      </footer>
+
+      {/* ================= 3D HOW IT WORKS OVERLAY ================= */}
+      {show3D && <HowItWorks3D onClose={() => setShow3D(false)} />}
+    </div>
+  );
+}
