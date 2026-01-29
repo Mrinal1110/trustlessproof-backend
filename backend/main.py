@@ -61,7 +61,7 @@ def create_invite_token(data: dict):
         db.close()
 
 # --------------------------------
-# AGENT ACTIVATE (FIXED)
+# AGENT ACTIVATE (SINGLE ACTIVE SESSION)
 # --------------------------------
 @app.post("/agent/activate")
 def activate_agent(data: dict):
@@ -80,7 +80,7 @@ def activate_agent(data: dict):
         if not invite:
             raise HTTPException(401, "Invalid or expired token")
 
-        # 🔥 DEACTIVATE OLD SESSIONS (CRITICAL FIX)
+        # 🔥 CRITICAL FIX: deactivate old sessions
         db.query(AgentSession).filter(
             AgentSession.org_id == invite.org_id,
             AgentSession.employee_id == invite.employee_id,
@@ -111,7 +111,7 @@ def activate_agent(data: dict):
         db.close()
 
 # --------------------------------
-# HEARTBEAT (JSON BODY – FINAL)
+# HEARTBEAT (JSON BODY)
 # --------------------------------
 @app.post("/agent/heartbeat")
 def heartbeat(data: dict):
@@ -136,8 +136,10 @@ def heartbeat(data: dict):
         if not s:
             raise HTTPException(403, "Invalid session")
 
+        # extend lease
         s.expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
+        # persist metadata
         if agent_version:
             s.agent_version = agent_version
         if platform:
@@ -183,7 +185,7 @@ def ingest_proof(data: dict):
         db.close()
 
 # --------------------------------
-# AGENT STATUS (FIXED – DEDUPED)
+# AGENT STATUS (DEDUPED, CORRECT)
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
@@ -202,23 +204,22 @@ def agent_status(org_id: str):
             .all()
         )
 
-        # 🔥 DEDUPE: newest session per employee
+        # 🔥 newest session per employee wins
         seen = {}
         for s in sessions:
             if s.employee_id not in seen:
                 seen[s.employee_id] = s
 
-        result = []
-        for s in seen.values():
-            result.append({
+        return [
+            {
                 "employee_id": s.employee_id,
                 "state": "ACTIVE",
                 "expires_at": s.expires_at.isoformat(),
                 "agent_version": s.agent_version,
                 "platform": s.platform,
-            })
-
-        return result
+            }
+            for s in seen.values()
+        ]
 
     finally:
         db.close()
@@ -230,11 +231,7 @@ def agent_status(org_id: str):
 def decision(user_id: str):
     db = SessionLocal()
     try:
-        proofs = (
-            db.query(Proof)
-            .filter(Proof.user_id == user_id)
-            .all()
-        )
+        proofs = db.query(Proof).filter(Proof.user_id == user_id).all()
 
         if len(proofs) < 3:
             band = "insufficient_data"
