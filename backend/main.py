@@ -61,7 +61,7 @@ def create_invite_token(data: dict):
         db.close()
 
 # --------------------------------
-# AGENT ACTIVATE
+# AGENT ACTIVATE (FIXED)
 # --------------------------------
 @app.post("/agent/activate")
 def activate_agent(data: dict):
@@ -79,6 +79,13 @@ def activate_agent(data: dict):
 
         if not invite:
             raise HTTPException(401, "Invalid or expired token")
+
+        # 🔥 DEACTIVATE OLD SESSIONS (CRITICAL FIX)
+        db.query(AgentSession).filter(
+            AgentSession.org_id == invite.org_id,
+            AgentSession.employee_id == invite.employee_id,
+            AgentSession.active == True,
+        ).update({AgentSession.active: False})
 
         session = AgentSession(
             id=str(uuid4()),
@@ -99,11 +106,12 @@ def activate_agent(data: dict):
             "session_id": session.id,
             "expires_at": session.expires_at.isoformat(),
         }
+
     finally:
         db.close()
 
 # --------------------------------
-# HEARTBEAT
+# HEARTBEAT (JSON BODY – FINAL)
 # --------------------------------
 @app.post("/agent/heartbeat")
 def heartbeat(data: dict):
@@ -128,17 +136,14 @@ def heartbeat(data: dict):
         if not s:
             raise HTTPException(403, "Invalid session")
 
-        # extend lease
         s.expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
-        # persist metadata
         if agent_version:
             s.agent_version = agent_version
         if platform:
             s.platform = platform
 
         db.commit()
-
         return {"status": "alive"}
 
     finally:
@@ -172,14 +177,13 @@ def ingest_proof(data: dict):
 
         db.add(proof)
         db.commit()
-
         return {"status": "recorded"}
 
     finally:
         db.close()
 
 # --------------------------------
-# AGENT STATUS
+# AGENT STATUS (FIXED – DEDUPED)
 # --------------------------------
 @app.get("/agent/status/{org_id}")
 def agent_status(org_id: str):
@@ -189,28 +193,29 @@ def agent_status(org_id: str):
     try:
         sessions = (
             db.query(AgentSession)
-            .filter(AgentSession.org_id == org_id)
+            .filter(
+                AgentSession.org_id == org_id,
+                AgentSession.active == True,
+                AgentSession.expires_at > now,
+            )
+            .order_by(AgentSession.created_at.desc())
             .all()
         )
 
-        result = []
+        # 🔥 DEDUPE: newest session per employee
+        seen = {}
         for s in sessions:
-            expires = s.expires_at
-            if expires and expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
+            if s.employee_id not in seen:
+                seen[s.employee_id] = s
 
-            state = (
-                "ACTIVE"
-                if expires and expires > now
-                else "OFFLINE"
-            )
-
+        result = []
+        for s in seen.values():
             result.append({
                 "employee_id": s.employee_id,
-                "state": state,
-                "expires_at": expires.isoformat() if expires else None,
-                "agent_version": getattr(s, "agent_version", None),
-                "platform": getattr(s, "platform", None),
+                "state": "ACTIVE",
+                "expires_at": s.expires_at.isoformat(),
+                "agent_version": s.agent_version,
+                "platform": s.platform,
             })
 
         return result
@@ -242,8 +247,7 @@ def decision(user_id: str):
             }
 
         now = datetime.now(timezone.utc)
-
-        DECAY_LAMBDA = 0.15  # per hour
+        DECAY_LAMBDA = 0.15
 
         weighted_sum = 0.0
         weight_total = 0.0
@@ -273,58 +277,6 @@ def decision(user_id: str):
             "policy": action["policy"],
         }
 
-    finally:
-        db.close()
-
-# --------------------------------
-# PROOFS READ
-# --------------------------------
-@app.get("/proofs/{user_id}")
-def get_proofs(user_id: str):
-    db = SessionLocal()
-    try:
-        proofs = (
-            db.query(Proof)
-            .filter(Proof.user_id == user_id)
-            .order_by(Proof.created_at.asc())
-            .all()
-        )
-
-        return [
-            {
-                "confidence": p.effort_score,
-                "timestamp": p.created_at.isoformat(),
-            }
-            for p in proofs
-        ]
-
-    finally:
-        db.close()
-
-# --------------------------------
-# ACTION LOG
-# --------------------------------
-@app.get("/action/{user_id}")
-def action(user_id: str):
-    db = SessionLocal()
-    try:
-        d = decision(user_id)
-        a = resolve_action(d["band"], d["confidence"])
-
-        log = ActionLog(
-            user_id=user_id,
-            band=d["band"],
-            policy=a["policy"],
-            message=a["message"],
-            timestamp=datetime.utcnow(),
-        )
-        db.add(log)
-        db.commit()
-
-        return {
-            "message": a["message"],
-            "evaluated_at": datetime.utcnow().isoformat(),
-        }
     finally:
         db.close()
 
